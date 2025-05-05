@@ -1,48 +1,69 @@
 package database
 
 import (
+    "context"
     "fmt"
-    "log"
     "os"
+    "time"
 
     "github.com/joho/godotenv"
     "gorm.io/driver/postgres"
     "gorm.io/gorm"
 )
 
-// Connect membuka koneksi ke Postgres dan meng-returns *gorm.DB
-func Connect() *gorm.DB {
-    // load .env (jika ada)
-    if err := godotenv.Load(); err != nil {
-        log.Println("⚠️  .env not found, reading env vars directly")
-    }
+type Service interface {
+    Health(ctx context.Context) error
+    DB() *gorm.DB
+}
 
-    // jika kamu pakai DATABASE_URL:
-    if url := os.Getenv("DATABASE_URL"); url != "" {
-        db, err := gorm.Open(postgres.Open(url), &gorm.Config{})
-        if err != nil {
-            log.Fatalf("failed to connect database: %v", err)
-        }
-        return db
-    }
+type service struct {
+    db *gorm.DB
+}
 
-    // atau build DSN manual
-    dsn := fmt.Sprintf(
-        "host=%s user=%s password=%s dbname=%s port=%s sslmode=disable",
-        os.Getenv("DB_HOST"),
-        os.Getenv("DB_USER"),
-        os.Getenv("DB_PASSWORD"),
-        os.Getenv("DB_NAME"),
-        os.Getenv("DB_PORT"),
-    )
+func New() (Service, error) {
+    // Load .env (sekali) — pakai autoload atau explicit
+    _ = godotenv.Load()
+
+    // Ambil DATABASE_URL atau build DSN
+    dsn := os.Getenv("DATABASE_URL")
+    if dsn == "" {
+        dsn = fmt.Sprintf(
+            "host=%s user=%s password=%s dbname=%s port=%s sslmode=%s",
+            os.Getenv("DB_HOST"),
+            os.Getenv("DB_USER"),
+            os.Getenv("DB_PASSWORD"),
+            os.Getenv("DB_NAME"),
+            os.Getenv("DB_PORT"),
+            os.Getenv("DB_SSLMODE"),
+        )
+    }
 
     db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
     if err != nil {
-        log.Fatalf("failed to connect database: %v", err)
+        return nil, fmt.Errorf("failed to connect database: %w", err)
     }
 
-    // Optional: auto‐migrate semua model
-    // db.AutoMigrate(&User{}, &Admin{}, &Vehicle{}, &Camera{}, &Detected{}, &LostReport{})
+    return &service{db: db}, nil
+}
 
-    return db
+// Health melakukan ping ke DB dengan timeout
+func (s *service) Health(ctx context.Context) error {
+    sqlDB, err := s.db.DB()
+    if err != nil {
+        return fmt.Errorf("getting sql.DB: %w", err)
+    }
+
+    // Pakai konteks timeout agar tidak nunggu selamanya
+    ctx, cancel := context.WithTimeout(ctx, 1*time.Second)
+    defer cancel()
+
+    if err := sqlDB.PingContext(ctx); err != nil {
+        return fmt.Errorf("database ping failed: %w", err)
+    }
+    return nil
+}
+
+// DB expose *gorm.DB
+func (s *service) DB() *gorm.DB {
+    return s.db
 }
