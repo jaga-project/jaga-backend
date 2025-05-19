@@ -9,22 +9,22 @@ import (
     "gorm.io/gorm"
 )
 
-type Admins struct {
-    UserID     uuid.UUID `gorm:"column:user_id;type:uuid;primaryKey" json:"user_id"`
-    AdminLevel int       `gorm:"column:admin_level" json:"admin_level"`
-    CreatedAt  time.Time `gorm:"column:created_at;autoCreateTime" json:"created_at"`
+type Admin struct {
+    UserID      string    `json:"user_id"` // uuid
+    AdminLevel  int       `json:"admin_level"`
+    CreatedAt   time.Time `json:"created_at"`
 }
 
-func (Admins) TableName() string {
-    return "admins"
+func (Admin) TableName() string {
+    return "Admin"
 }
 
-func CreateAdmin(ctx context.Context, db *gorm.DB, a *Admins) error {
+func CreateAdmin(ctx context.Context, db *gorm.DB, a *Admin) error {
     return db.WithContext(ctx).Create(a).Error
 }
 
-func GetAdminByUserID(ctx context.Context, db *gorm.DB, userID uuid.UUID) (*Admins, error) {
-    var a Admins
+func GetAdminByUserID(ctx context.Context, db *gorm.DB, userID uuid.UUID) (*Admin, error) {
+    var a Admin
     if err := db.WithContext(ctx).
         First(&a, "user_id = ?", userID).Error; err != nil {
         return nil, err
@@ -32,8 +32,8 @@ func GetAdminByUserID(ctx context.Context, db *gorm.DB, userID uuid.UUID) (*Admi
     return &a, nil
 }
 
-func ListAdmins(ctx context.Context, db *gorm.DB, where map[string]interface{}) ([]Admins, error) {
-    var list []Admins
+func ListAdmin(ctx context.Context, db *gorm.DB, where map[string]interface{}) ([]Admin, error) {
+    var list []Admin
     q := db.WithContext(ctx)
     if len(where) > 0 {
         q = q.Where(where)
@@ -46,7 +46,7 @@ func ListAdmins(ctx context.Context, db *gorm.DB, where map[string]interface{}) 
 
 func UpdateAdmin(ctx context.Context, db *gorm.DB, userID uuid.UUID, updates map[string]interface{}) error {
     res := db.WithContext(ctx).
-        Model(&Admins{}).
+        Model(&Admin{}).
         Where("user_id = ?", userID).
         Updates(updates)
     if res.Error != nil {
@@ -60,7 +60,7 @@ func UpdateAdmin(ctx context.Context, db *gorm.DB, userID uuid.UUID, updates map
 
 func DeleteAdmin(ctx context.Context, db *gorm.DB, userID uuid.UUID) error {
     res := db.WithContext(ctx).
-        Delete(&Admins{}, "user_id = ?", userID)
+        Delete(&Admin{}, "user_id = ?", userID)
     if res.Error != nil {
         return res.Error
     }

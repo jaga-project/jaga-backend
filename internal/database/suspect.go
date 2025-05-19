@@ -9,12 +9,12 @@ import (
 )
 
 type Suspect struct {
-    SuspectID  int64     `gorm:"column:suspect_id;primaryKey;autoIncrement" json:"suspect_id"`
-    DetectedID int64     `gorm:"column:detected_id"                    json:"detected_id"`
-    LostID     int64     `gorm:"column:lost_id"                        json:"lost_id"`
-    Score      float64   `gorm:"column:score"                          json:"score"`
-    Rank       int       `gorm:"column:rank"                           json:"rank"`
-    CreatedAt  time.Time `gorm:"column:created_at;autoCreateTime"       json:"created_at"`
+    SuspectID  int64     `json:"suspect_id"` // bigserial
+    DetectedID int64     `json:"detected_id"`
+    LostID     int64     `json:"lost_id"`
+    Score      float64   `json:"score"`
+    Rank       int       `json:"rank"`
+    CreatedAt  time.Time `json:"created_at"`
 }
 
 func (Suspect) TableName() string {

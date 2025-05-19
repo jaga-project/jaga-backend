@@ -5,18 +5,17 @@ import (
     "errors"
     "time"
 
-    "github.com/google/uuid"
     "gorm.io/gorm"
 )
 
 type LostReport struct {
-    LostID     int64     `gorm:"column:lost_id;primaryKey;autoIncrement" json:"lost_id"`
-    UserID     uuid.UUID `gorm:"column:user_id;type:uuid"            json:"user_id"`
-    Timestamp  time.Time `gorm:"column:timestamp"                    json:"timestamp"`
-    VehicleID  int64     `gorm:"column:vehicle_id"                   json:"vehicle_id"`
-    Address    string    `gorm:"column:address"                      json:"address"`
-    Status     string    `gorm:"column:status"                       json:"status"`
-    DetectedID int64     `gorm:"column:detected_id"                  json:"detected_id"`
+    LostID     int       `json:"lost_id"` // serial
+    UserID     string    `json:"user_id"` // uuid
+    Timestamp  time.Time `json:"timestamp"`
+    VehicleID  int       `json:"vehicle_id"`
+    Address    string    `json:"address"`
+    Status     string    `json:"status"`
+    DetectedID int       `json:"detected_id"`
 }
 
 func (LostReport) TableName() string {

@@ -3,20 +3,17 @@ package database
 import (
     "context"
     "errors"
-    "time"
 
     "gorm.io/gorm"
 )
 
 type Camera struct {
-    CameraID  int64     `gorm:"column:camera_id;primaryKey;autoIncrement" json:"camera_id"`
-    Name      string    `gorm:"column:name"       json:"name"`
-    IPCamera  string    `gorm:"column:ip_camera"  json:"ip_camera"`
-    Location  string    `gorm:"column:location"   json:"location"`
-    Address   string    `gorm:"column:address"    json:"address"`
-    IsActive  bool      `gorm:"column:is_active"  json:"is_active"`
-    CreatedAt time.Time `gorm:"column:created_at;autoCreateTime" json:"created_at"`
-    UpdatedAt time.Time `gorm:"column:updated_at;autoUpdateTime" json:"updated_at"`
+    CameraID   int    `json:"camera_id"` // serial
+    Name       string `json:"name"`
+    IPCamera   string `json:"ip_camera"`
+    Location   string `json:"location"`
+    Address    string `json:"address"`
+    IsActive   bool   `json:"is_active"`
 }
 
 func (Camera) TableName() string {

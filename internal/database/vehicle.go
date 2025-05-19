@@ -3,24 +3,20 @@ package database
 import (
     "context"
     "errors"
-    "time"
-
-    "github.com/google/uuid"
     "gorm.io/gorm"
 )
 
 // Vehicle represents a row in the vehicles table.
 type Vehicle struct {
-    VehicleID   int64     `gorm:"column:vehicle_id;primaryKey;autoIncrement" json:"vehicle_id"`
-    VehicleName string    `gorm:"column:vehicle_name"                     json:"vehicle_name"`
-    Color       string    `gorm:"column:color"                            json:"color"`
-    UserID      uuid.UUID `gorm:"column:user_id;type:uuid"                json:"user_id"`
-    PlateNumber string    `gorm:"column:plate_number"                     json:"plate_number"`
-    CreatedAt   time.Time `gorm:"column:created_at;autoCreateTime"         json:"created_at"`
+    VehicleID    int    `json:"vehicle_id"` // serial
+    VehicleName  string `json:"vehicle_name"`
+    Color        string `json:"color"`
+    UserID       string `json:"user_id"` // uuid
+    PlateNumber  string `json:"plate_number"`
 }
 
 func (Vehicle) TableName() string {
-    return "vehicles"
+    return "vehicle"
 }
 
 func CreateVehicle(ctx context.Context, db *gorm.DB, v *Vehicle) error {

@@ -1,69 +1,53 @@
 package database
 
 import (
-    "context"
-    "fmt"
-    "os"
-    "time"
+	"database/sql"
+	"fmt"
+	"log"
+	"os"
+	"time"
 
-    "github.com/joho/godotenv"
-    "gorm.io/driver/postgres"
-    "gorm.io/gorm"
+	_ "github.com/joho/godotenv/autoload"
+	_ "github.com/lib/pq"
 )
 
 type Service interface {
-    Health(ctx context.Context) error
-    DB() *gorm.DB
+	Health() map[string]string
+	Get() *sql.DB
 }
 
 type service struct {
-    db *gorm.DB
+	db *sql.DB
 }
 
-func New() (Service, error) {
-    // Load .env (sekali) — pakai autoload atau explicit
-    _ = godotenv.Load()
+func New() Service {
+	connStr := os.Getenv("POSTGRES_URI")
+	db, err := sql.Open("postgres", connStr)
+	if err != nil {
+		log.Fatal(err)
+	}
 
-    // Ambil DATABASE_URL atau build DSN
-    dsn := os.Getenv("DATABASE_URL")
-    if dsn == "" {
-        dsn = fmt.Sprintf(
-            "host=%s user=%s password=%s dbname=%s port=%s sslmode=%s",
-            os.Getenv("DB_HOST"),
-            os.Getenv("DB_USER"),
-            os.Getenv("DB_PASSWORD"),
-            os.Getenv("DB_NAME"),
-            os.Getenv("DB_PORT"),
-            os.Getenv("DB_SSLMODE"),
-        )
-    }
+	// Optional: Set connection pool settings
+	db.SetMaxOpenConns(10)
+	db.SetMaxIdleConns(5)
+	db.SetConnMaxLifetime(time.Hour)
 
-    db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
-    if err != nil {
-        return nil, fmt.Errorf("failed to connect database: %w", err)
-    }
-
-    return &service{db: db}, nil
+	return &service{
+		db: db,
+	}
 }
 
-// Health melakukan ping ke DB dengan timeout
-func (s *service) Health(ctx context.Context) error {
-    sqlDB, err := s.db.DB()
-    if err != nil {
-        return fmt.Errorf("getting sql.DB: %w", err)
-    }
-
-    // Pakai konteks timeout agar tidak nunggu selamanya
-    ctx, cancel := context.WithTimeout(ctx, 1*time.Second)
-    defer cancel()
-
-    if err := sqlDB.PingContext(ctx); err != nil {
-        return fmt.Errorf("database ping failed: %w", err)
-    }
-    return nil
+func (s *service) Health() map[string]string {
+	err := s.db.Ping()
+	if err != nil {
+		log.Fatalf("%s", fmt.Sprintf("db down: %v", err))
+	}
+    log.Printf("db up: %v", err)
+	return map[string]string{
+		"message": "It's healthy",
+	}
 }
 
-// DB expose *gorm.DB
-func (s *service) DB() *gorm.DB {
-    return s.db
+func (s *service) Get() *sql.DB {
+	return s.db
 }

@@ -9,12 +9,12 @@ import (
 )
 
 type Detected struct {
-    DetectedID int64     `gorm:"column:detected_id;primaryKey;autoIncrement" json:"detected_id"`
-    VehicleID  int64     `gorm:"column:vehicle_id"                     json:"vehicle_id"`
-    CameraID   int64     `gorm:"column:camera_id"                      json:"camera_id"`
-    ImageURL   string    `gorm:"column:image_url"                      json:"image_url"`
-    Timestamp  time.Time `gorm:"column:timestamp"                      json:"timestamp"`
-    IsSuspect  bool      `gorm:"column:is_suspect"                     json:"is_suspect"`
+    DetectedID int       `json:"detected_id"` // serial
+    VehicleID  int       `json:"vehicle_id"`
+    CameraID   int       `json:"camera_id"`
+    ImageURL   string    `json:"image_url"`
+    Timestamp  time.Time `json:"timestamp"`
+    IsSuspect  bool      `json:"is_suspect"`
 }
 
 func (Detected) TableName() string {
