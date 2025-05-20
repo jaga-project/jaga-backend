@@ -1,71 +1,78 @@
 package database
 
 import (
-    "context"
-    "errors"
-    "gorm.io/gorm"
+	"context"
+	"database/sql"
+	"errors"
 )
 
 // Vehicle represents a row in the vehicles table.
 type Vehicle struct {
-    VehicleID    int    `json:"vehicle_id"` // serial
+    VehicleID    int    `json:"vehicle_id"`
     VehicleName  string `json:"vehicle_name"`
     Color        string `json:"color"`
-    UserID       string `json:"user_id"` // uuid
+    UserID       string `json:"user_id"`
     PlateNumber  string `json:"plate_number"`
 }
 
-func (Vehicle) TableName() string {
-    return "vehicle"
+func CreateVehicle(ctx context.Context, db *sql.DB, v *Vehicle) error {
+    query := `INSERT INTO vehicle (vehicle_name, color, user_id, plate_number) VALUES ($1, $2, $3, $4) RETURNING vehicle_id`
+    return db.QueryRowContext(ctx, query, v.VehicleName, v.Color, v.UserID, v.PlateNumber).Scan(&v.VehicleID)
 }
 
-func CreateVehicle(ctx context.Context, db *gorm.DB, v *Vehicle) error {
-    return db.WithContext(ctx).Create(v).Error
-}
-
-func GetVehicleByID(ctx context.Context, db *gorm.DB, id int64) (*Vehicle, error) {
+func GetVehicleByID(ctx context.Context, db *sql.DB, id int64) (*Vehicle, error) {
     var v Vehicle
-    if err := db.WithContext(ctx).
-        First(&v, "vehicle_id = ?", id).Error; err != nil {
+    query := `SELECT vehicle_id, vehicle_name, color, user_id, plate_number FROM vehicle WHERE vehicle_id = $1`
+    err := db.QueryRowContext(ctx, query, id).Scan(&v.VehicleID, &v.VehicleName, &v.Color, &v.UserID, &v.PlateNumber)
+    if err != nil {
+        if err == sql.ErrNoRows {
+            return nil, errors.New("vehicle not found")
+        }
         return nil, err
     }
     return &v, nil
 }
 
-func ListVehicles(ctx context.Context, db *gorm.DB, filters map[string]interface{}) ([]Vehicle, error) {
-    var list []Vehicle
-    q := db.WithContext(ctx)
-    if len(filters) > 0 {
-        q = q.Where(filters)
-    }
-    if err := q.Find(&list).Error; err != nil {
+func ListVehicles(ctx context.Context, db *sql.DB) ([]Vehicle, error) {
+    query := `SELECT vehicle_id, vehicle_name, color, user_id, plate_number FROM vehicle`
+    rows, err := db.QueryContext(ctx, query)
+    if err != nil {
         return nil, err
     }
-    return list, nil
+    defer rows.Close()
+
+    var vehicles []Vehicle
+    for rows.Next() {
+        var v Vehicle
+        if err := rows.Scan(&v.VehicleID, &v.VehicleName, &v.Color, &v.UserID, &v.PlateNumber); err != nil {
+            return nil, err
+        }
+        vehicles = append(vehicles, v)
+    }
+    return vehicles, nil
 }
 
-func UpdateVehicle(ctx context.Context, db *gorm.DB, id int64, updates map[string]interface{}) error {
-    res := db.WithContext(ctx).
-        Model(&Vehicle{}).
-        Where("vehicle_id = ?", id).
-        Updates(updates)
-    if res.Error != nil {
-        return res.Error
+func UpdateVehicle(ctx context.Context, db *sql.DB, id int64, v *Vehicle) error {
+    query := `UPDATE vehicle SET vehicle_name=$1, color=$2, user_id=$3, plate_number=$4 WHERE vehicle_id=$5`
+    res, err := db.ExecContext(ctx, query, v.VehicleName, v.Color, v.UserID, v.PlateNumber, id)
+    if err != nil {
+        return err
     }
-    if res.RowsAffected == 0 {
+    count, err := res.RowsAffected()
+    if err == nil && count == 0 {
         return errors.New("no vehicle record updated")
     }
-    return nil
+    return err
 }
 
-func DeleteVehicle(ctx context.Context, db *gorm.DB, id int64) error {
-    res := db.WithContext(ctx).
-        Delete(&Vehicle{}, "vehicle_id = ?", id)
-    if res.Error != nil {
-        return res.Error
+func DeleteVehicle(ctx context.Context, db *sql.DB, id int64) error {
+    res, err := db.ExecContext(ctx, `DELETE FROM vehicle WHERE vehicle_id=$1`, id)
+    if err != nil {
+        return err
     }
-    if res.RowsAffected == 0 {
+    count, err := res.RowsAffected()
+    if err == nil && count == 0 {
         return errors.New("no vehicle record deleted")
     }
-    return nil
+    return err
 }

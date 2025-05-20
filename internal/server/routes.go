@@ -12,7 +12,7 @@ func (s *Server) RegisterRoutes() http.Handler {
     // Route root
     router.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
         w.WriteHeader(http.StatusOK)
-        w.Write([]byte("Welcome to JAGA Backend!"))
+        w.Write([]byte("Welcome to JAGA"))
     })
 
     // Route health check / ping
@@ -21,9 +21,13 @@ func (s *Server) RegisterRoutes() http.Handler {
         w.Write([]byte("pong"))
     })
 
-    // User routes
+
     s.RegisterUserRoutes(router)
 
+    s.RegisterVehicleRoutes(router)
+
+		s.RegisterDetectedRoutes(router)
+		
     // TODO: tambahkan route lain di sini, misal /vehicles, /reports, dsb.
     return router
 }
