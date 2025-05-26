@@ -33,6 +33,19 @@ func GetVehicleByID(ctx context.Context, db *sql.DB, id int64) (*Vehicle, error)
     return &v, nil
 }
 
+func GetVehicleByPlate(ctx context.Context, db *sql.DB, plate string) (*Vehicle, error) {
+    var v Vehicle
+    query := `SELECT vehicle_id, vehicle_name, color, user_id, plate_number FROM vehicle WHERE plate_number = $1`
+    err := db.QueryRowContext(ctx, query, plate).Scan(&v.VehicleID, &v.VehicleName, &v.Color, &v.UserID, &v.PlateNumber)
+    if err != nil {
+        if err == sql.ErrNoRows {
+            return nil, errors.New("vehicle not found")
+        }
+        return nil, err
+    }
+    return &v, nil
+}
+
 func ListVehicles(ctx context.Context, db *sql.DB) ([]Vehicle, error) {
     query := `SELECT vehicle_id, vehicle_name, color, user_id, plate_number FROM vehicle`
     rows, err := db.QueryContext(ctx, query)

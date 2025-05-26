@@ -1,71 +1,77 @@
 package database
 
 import (
-    "context"
-    "errors"
-    "time"
-
-    "github.com/google/uuid"
-    "gorm.io/gorm"
+	"context"
+	"database/sql"
+	"errors"
+	"time"
 )
 
 type Admin struct {
-    UserID      string    `json:"user_id"` // uuid
-    AdminLevel  int       `json:"admin_level"`
-    CreatedAt   time.Time `json:"created_at"`
+    UserID     string    `json:"user_id"` // uuid
+    AdminLevel int       `json:"admin_level"`
+    CreatedAt  time.Time `json:"created_at"`
 }
 
-func (Admin) TableName() string {
-    return "Admin"
+func CreateAdmin(ctx context.Context, db *sql.DB, a *Admin) error {
+    query := `INSERT INTO admins (user_id, admin_level, created_at) VALUES ($1, $2, $3)`
+    _, err := db.ExecContext(ctx, query, a.UserID, a.AdminLevel, a.CreatedAt)
+    return err
 }
 
-func CreateAdmin(ctx context.Context, db *gorm.DB, a *Admin) error {
-    return db.WithContext(ctx).Create(a).Error
-}
-
-func GetAdminByUserID(ctx context.Context, db *gorm.DB, userID uuid.UUID) (*Admin, error) {
+func GetAdminByUserID(ctx context.Context, db *sql.DB, userID string) (*Admin, error) {
     var a Admin
-    if err := db.WithContext(ctx).
-        First(&a, "user_id = ?", userID).Error; err != nil {
+    query := `SELECT user_id, admin_level, created_at FROM admins WHERE user_id = $1`
+    err := db.QueryRowContext(ctx, query, userID).Scan(&a.UserID, &a.AdminLevel, &a.CreatedAt)
+    if err != nil {
+        if err == sql.ErrNoRows {
+            return nil, errors.New("admin not found")
+        }
         return nil, err
     }
     return &a, nil
 }
 
-func ListAdmin(ctx context.Context, db *gorm.DB, where map[string]interface{}) ([]Admin, error) {
-    var list []Admin
-    q := db.WithContext(ctx)
-    if len(where) > 0 {
-        q = q.Where(where)
-    }
-    if err := q.Find(&list).Error; err != nil {
+func ListAdmin(ctx context.Context, db *sql.DB) ([]Admin, error) {
+    query := `SELECT user_id, admin_level, created_at FROM admins`
+    rows, err := db.QueryContext(ctx, query)
+    if err != nil {
         return nil, err
+    }
+    defer rows.Close()
+
+    var list []Admin
+    for rows.Next() {
+        var a Admin
+        if err := rows.Scan(&a.UserID, &a.AdminLevel, &a.CreatedAt); err != nil {
+            return nil, err
+        }
+        list = append(list, a)
     }
     return list, nil
 }
 
-func UpdateAdmin(ctx context.Context, db *gorm.DB, userID uuid.UUID, updates map[string]interface{}) error {
-    res := db.WithContext(ctx).
-        Model(&Admin{}).
-        Where("user_id = ?", userID).
-        Updates(updates)
-    if res.Error != nil {
-        return res.Error
+func UpdateAdmin(ctx context.Context, db *sql.DB, userID string, a *Admin) error {
+    query := `UPDATE admins SET admin_level=$1, created_at=$2 WHERE user_id=$3`
+    res, err := db.ExecContext(ctx, query, a.AdminLevel, a.CreatedAt, userID)
+    if err != nil {
+        return err
     }
-    if res.RowsAffected == 0 {
+    count, err := res.RowsAffected()
+    if err == nil && count == 0 {
         return errors.New("no admin record updated")
     }
-    return nil
+    return err
 }
 
-func DeleteAdmin(ctx context.Context, db *gorm.DB, userID uuid.UUID) error {
-    res := db.WithContext(ctx).
-        Delete(&Admin{}, "user_id = ?", userID)
-    if res.Error != nil {
-        return res.Error
+func DeleteAdmin(ctx context.Context, db *sql.DB, userID string) error {
+    res, err := db.ExecContext(ctx, `DELETE FROM admins WHERE user_id = $1`, userID)
+    if err != nil {
+        return err
     }
-    if res.RowsAffected == 0 {
+    count, err := res.RowsAffected()
+    if err == nil && count == 0 {
         return errors.New("no admin record deleted")
     }
-    return nil
+    return err
 }

@@ -1,11 +1,10 @@
 package database
 
 import (
-    "context"
-    "errors"
-    "time"
-
-    "gorm.io/gorm"
+	"context"
+	"database/sql"
+	"errors"
+	"time"
 )
 
 type Suspect struct {
@@ -17,57 +16,65 @@ type Suspect struct {
     CreatedAt  time.Time `json:"created_at"`
 }
 
-func (Suspect) TableName() string {
-    return "suspect"
+func CreateSuspect(ctx context.Context, db *sql.DB, s *Suspect) error {
+    query := `INSERT INTO suspect (detected_id, lost_id, score, rank, created_at)
+              VALUES ($1, $2, $3, $4, $5) RETURNING suspect_id`
+    return db.QueryRowContext(ctx, query, s.DetectedID, s.LostID, s.Score, s.Rank, s.CreatedAt).Scan(&s.SuspectID)
 }
 
-func CreateSuspect(ctx context.Context, db *gorm.DB, s *Suspect) error {
-    return db.WithContext(ctx).Create(s).Error
-}
-
-func GetSuspectByID(ctx context.Context, db *gorm.DB, id int64) (*Suspect, error) {
+func GetSuspectByID(ctx context.Context, db *sql.DB, id int64) (*Suspect, error) {
     var s Suspect
-    if err := db.WithContext(ctx).
-        First(&s, "suspect_id = ?", id).Error; err != nil {
+    query := `SELECT suspect_id, detected_id, lost_id, score, rank, created_at FROM suspect WHERE suspect_id = $1`
+    err := db.QueryRowContext(ctx, query, id).Scan(&s.SuspectID, &s.DetectedID, &s.LostID, &s.Score, &s.Rank, &s.CreatedAt)
+    if err != nil {
+        if err == sql.ErrNoRows {
+            return nil, errors.New("suspect not found")
+        }
         return nil, err
     }
     return &s, nil
 }
 
-func ListSuspects(ctx context.Context, db *gorm.DB, filters map[string]interface{}) ([]Suspect, error) {
-    var list []Suspect
-    q := db.WithContext(ctx)
-    if len(filters) > 0 {
-        q = q.Where(filters)
-    }
-    if err := q.Find(&list).Error; err != nil {
+func ListSuspects(ctx context.Context, db *sql.DB) ([]Suspect, error) {
+    query := `SELECT suspect_id, detected_id, lost_id, score, rank, created_at FROM suspect`
+    rows, err := db.QueryContext(ctx, query)
+    if err != nil {
         return nil, err
+    }
+    defer rows.Close()
+
+    var list []Suspect
+    for rows.Next() {
+        var s Suspect
+        if err := rows.Scan(&s.SuspectID, &s.DetectedID, &s.LostID, &s.Score, &s.Rank, &s.CreatedAt); err != nil {
+            return nil, err
+        }
+        list = append(list, s)
     }
     return list, nil
 }
 
-func UpdateSuspect(ctx context.Context, db *gorm.DB, id int64, updates map[string]interface{}) error {
-    res := db.WithContext(ctx).
-        Model(&Suspect{}).
-        Where("suspect_id = ?", id).
-        Updates(updates)
-    if res.Error != nil {
-        return res.Error
+func UpdateSuspect(ctx context.Context, db *sql.DB, id int64, s *Suspect) error {
+    query := `UPDATE suspect SET detected_id=$1, lost_id=$2, score=$3, rank=$4, created_at=$5 WHERE suspect_id=$6`
+    res, err := db.ExecContext(ctx, query, s.DetectedID, s.LostID, s.Score, s.Rank, s.CreatedAt, id)
+    if err != nil {
+        return err
     }
-    if res.RowsAffected == 0 {
+    count, err := res.RowsAffected()
+    if err == nil && count == 0 {
         return errors.New("no suspect record updated")
     }
-    return nil
+    return err
 }
 
-func DeleteSuspect(ctx context.Context, db *gorm.DB, id int64) error {
-    res := db.WithContext(ctx).
-        Delete(&Suspect{}, "suspect_id = ?", id)
-    if res.Error != nil {
-        return res.Error
+func DeleteSuspect(ctx context.Context, db *sql.DB, id int64) error {
+    res, err := db.ExecContext(ctx, `DELETE FROM suspect WHERE suspect_id = $1`, id)
+    if err != nil {
+        return err
     }
-    if res.RowsAffected == 0 {
+    count, err := res.RowsAffected()
+    if err == nil && count == 0 {
         return errors.New("no suspect record deleted")
     }
-    return nil
+    return err
 }

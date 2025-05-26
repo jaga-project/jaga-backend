@@ -51,6 +51,22 @@ func (s *Server) handleGetVehicle() http.HandlerFunc {
 	}
 }
 
+func (s *Server) handleGetVehicleByPlate() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		plate := mux.Vars(r)["plate_number"]
+		if plate == "" {
+			http.Error(w, "plate_number is required", http.StatusBadRequest)
+			return
+		}
+		v, err := database.GetVehicleByPlate(r.Context(), s.db.Get(), plate)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+		json.NewEncoder(w).Encode(v)
+	}
+}
+
 func (s *Server) handleUpdateVehicle() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		idStr := mux.Vars(r)["id"]
@@ -93,6 +109,7 @@ func (s *Server) RegisterVehicleRoutes(r *mux.Router) {
 	r.HandleFunc("/vehicles", s.handleCreateVehicle()).Methods("POST")
 	r.HandleFunc("/vehicles", s.handleGetVehicle()).Methods("GET")
 	r.HandleFunc("/vehicles/{id}", s.handleGetVehicle()).Methods("GET")
+	r.HandleFunc("/vehicles/plate/{plate_number}", s.handleGetVehicleByPlate()).Methods("GET")
 	r.HandleFunc("/vehicles/{id}", s.handleUpdateVehicle()).Methods("PUT")
 	r.HandleFunc("/vehicles/{id}", s.handleDeleteVehicle()).Methods("DELETE")
 }

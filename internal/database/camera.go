@@ -1,10 +1,9 @@
 package database
 
 import (
-    "context"
-    "errors"
-
-    "gorm.io/gorm"
+	"context"
+	"database/sql"
+	"errors"
 )
 
 type Camera struct {
@@ -16,57 +15,67 @@ type Camera struct {
     IsActive   bool   `json:"is_active"`
 }
 
-func (Camera) TableName() string {
-    return "cameras"
+func CreateCamera(ctx context.Context, db *sql.DB, c *Camera) error {
+    query := `INSERT INTO cameras (name, ip_camera, location, address, is_active)
+              VALUES ($1, $2, $3, $4, $5) RETURNING camera_id`
+    return db.QueryRowContext(ctx, query, c.Name, c.IPCamera, c.Location, c.Address, c.IsActive).Scan(&c.CameraID)
 }
 
-func CreateCamera(ctx context.Context, db *gorm.DB, c *Camera) error {
-    return db.WithContext(ctx).Create(c).Error
-}
-
-func GetCameraByID(ctx context.Context, db *gorm.DB, id int64) (*Camera, error) {
+func GetCameraByID(ctx context.Context, db *sql.DB, id int64) (*Camera, error) {
     var cam Camera
-    if err := db.WithContext(ctx).
-        First(&cam, "camera_id = ?", id).Error; err != nil {
+    query := `SELECT camera_id, name, ip_camera, location, address, is_active FROM cameras WHERE camera_id = $1`
+    err := db.QueryRowContext(ctx, query, id).Scan(
+        &cam.CameraID, &cam.Name, &cam.IPCamera, &cam.Location, &cam.Address, &cam.IsActive,
+    )
+    if err != nil {
+        if err == sql.ErrNoRows {
+            return nil, errors.New("camera not found")
+        }
         return nil, err
     }
     return &cam, nil
 }
 
-func ListCameras(ctx context.Context, db *gorm.DB, filters map[string]interface{}) ([]Camera, error) {
-    var list []Camera
-    q := db.WithContext(ctx)
-    if len(filters) > 0 {
-        q = q.Where(filters)
-    }
-    if err := q.Find(&list).Error; err != nil {
+func ListCameras(ctx context.Context, db *sql.DB) ([]Camera, error) {
+    query := `SELECT camera_id, name, ip_camera, location, address, is_active FROM cameras`
+    rows, err := db.QueryContext(ctx, query)
+    if err != nil {
         return nil, err
+    }
+    defer rows.Close()
+
+    var list []Camera
+    for rows.Next() {
+        var cam Camera
+        if err := rows.Scan(&cam.CameraID, &cam.Name, &cam.IPCamera, &cam.Location, &cam.Address, &cam.IsActive); err != nil {
+            return nil, err
+        }
+        list = append(list, cam)
     }
     return list, nil
 }
 
-func UpdateCamera(ctx context.Context, db *gorm.DB, id int64, updates map[string]interface{}) error {
-    res := db.WithContext(ctx).
-        Model(&Camera{}).
-        Where("camera_id = ?", id).
-        Updates(updates)
-    if res.Error != nil {
-        return res.Error
+func UpdateCamera(ctx context.Context, db *sql.DB, id int64, c *Camera) error {
+    query := `UPDATE cameras SET name=$1, ip_camera=$2, location=$3, address=$4, is_active=$5 WHERE camera_id=$6`
+    res, err := db.ExecContext(ctx, query, c.Name, c.IPCamera, c.Location, c.Address, c.IsActive, id)
+    if err != nil {
+        return err
     }
-    if res.RowsAffected == 0 {
+    count, err := res.RowsAffected()
+    if err == nil && count == 0 {
         return errors.New("no camera record updated")
     }
-    return nil
+    return err
 }
 
-func DeleteCamera(ctx context.Context, db *gorm.DB, id int64) error {
-    res := db.WithContext(ctx).
-        Delete(&Camera{}, "camera_id = ?", id)
-    if res.Error != nil {
-        return res.Error
+func DeleteCamera(ctx context.Context, db *sql.DB, id int64) error {
+    res, err := db.ExecContext(ctx, `DELETE FROM cameras WHERE camera_id = $1`, id)
+    if err != nil {
+        return err
     }
-    if res.RowsAffected == 0 {
+    count, err := res.RowsAffected()
+    if err == nil && count == 0 {
         return errors.New("no camera record deleted")
     }
-    return nil
+    return err
 }
