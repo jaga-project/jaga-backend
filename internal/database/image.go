@@ -1,95 +1,111 @@
 package database
 
 import (
-	"context"
-	"database/sql"
-	"errors"
-	"time"
+    "context"
+    "database/sql"
+    "errors"
+    "fmt"
+    "time"
 )
 
 type Image struct {
-	ImageID          int64     `json:"image_id"`
-	StoragePath      string    `json:"storage_path"`
-	FilenameOriginal *string   `json:"filename_original,omitempty"` // Pointer agar bisa null
-	MimeType         *string   `json:"mime_type,omitempty"`
-	SizeBytes        *int64    `json:"size_bytes,omitempty"`
-	UploadedAt       time.Time `json:"uploaded_at"`
-	// UploaderUserID   *string   `json:"uploader_user_id,omitempty"` // Jika ingin melacak siapa yang mengupload
+    ImageID          int64     `json:"image_id"`
+    StoragePath      string    `json:"storage_path"`
+    FilenameOriginal string    `json:"filename_original,omitempty"`
+    MimeType         string    `json:"mime_type,omitempty"`
+    SizeBytes        int64     `json:"size_bytes,omitempty"`
+    UploadedAt       time.Time `json:"uploaded_at"`
+    // UploaderUserID   *string   `json:"uploader_user_id,omitempty"` // Jika ingin melacak siapa yang mengupload
 }
 
-// CreateImage menyisipkan record gambar baru dan mengembalikan ID-nya.
-func CreateImage(ctx context.Context, db *sql.DB, img *Image) (int64, error) {
-	query := `INSERT INTO images (storage_path, filename_original, mime_type, size_bytes)
-              VALUES ($1, $2, $3, $4) RETURNING image_id, uploaded_at`
-	// Jika UploaderUserID diaktifkan, tambahkan ke query dan parameter:
-	// query := `INSERT INTO images (storage_path, filename_original, mime_type, size_bytes, uploader_user_id)
-	//           VALUES ($1, $2, $3, $4, $5) RETURNING image_id, uploaded_at`
-	err := db.QueryRowContext(ctx, query,
-		img.StoragePath, img.FilenameOriginal, img.MimeType, img.SizeBytes,
-		// img.UploaderUserID, // Jika UploaderUserID diaktifkan
-	).Scan(&img.ImageID, &img.UploadedAt) // Ambil juga uploaded_at yang di-generate DB
-	if err != nil {
-		return 0, err
-	}
-	return img.ImageID, nil
+// Querier adalah interface yang bisa berupa *sql.DB atau *sql.Tx
+type Querier interface {
+    QueryRowContext(ctx context.Context, query string, args ...interface{}) *sql.Row
+}
+
+// GetImageStoragePath mengambil storage_path dari sebuah gambar berdasarkan ID-nya.
+// Dapat digunakan dengan *sql.DB atau *sql.Tx.
+func GetImageStoragePath(ctx context.Context, q Querier, imageID int64) (string, error) {
+    query := `SELECT storage_path FROM images WHERE image_id = $1`
+    var storagePath string
+    err := q.QueryRowContext(ctx, query, imageID).Scan(&storagePath)
+    if err != nil {
+        if err == sql.ErrNoRows {
+            return "", sql.ErrNoRows // Kembalikan sql.ErrNoRows agar bisa dicek dengan errors.Is
+        }
+        return "", fmt.Errorf("error getting image storage path for ID %d: %w", imageID, err)
+    }
+    return storagePath, nil
+}
+
+// CreateImageTx menyisipkan record gambar baru sebagai bagian dari transaksi yang ada.
+func CreateImageTx(ctx context.Context, tx *sql.Tx, img *Image) error {
+    query := `INSERT INTO images (storage_path, filename_original, mime_type, size_bytes, uploaded_at)
+              VALUES ($1, $2, $3, $4, NOW()) RETURNING image_id, uploaded_at`
+    fmt.Printf("DEBUG DB CreateImageTx: Attempting to insert image. Path: %s, OriginalName: %s, Mime: %s, Size: %d\n", img.StoragePath, img.FilenameOriginal, img.MimeType, img.SizeBytes)
+    err := tx.QueryRowContext(ctx, query, img.StoragePath, img.FilenameOriginal, img.MimeType, img.SizeBytes).Scan(&img.ImageID, &img.UploadedAt)
+    if err != nil {
+        fmt.Printf("ERROR DB CreateImageTx: Failed to insert/scan image: %v\n", err)
+        return err
+    }
+    fmt.Printf("DEBUG DB CreateImageTx: Successfully inserted image. ImageID: %d, UploadedAt: %v\n", img.ImageID, img.UploadedAt)
+    return nil
 }
 
 func GetImageByID(ctx context.Context, db *sql.DB, id int64) (*Image, error) {
-	var img Image
-	// Jika UploaderUserID diaktifkan, tambahkan ke SELECT list:
-	// query := `SELECT image_id, storage_path, filename_original, mime_type, size_bytes, uploaded_at, uploader_user_id
-	//           FROM images WHERE image_id = $1`
-	query := `SELECT image_id, storage_path, filename_original, mime_type, size_bytes, uploaded_at
+    var img Image
+    // Jika UploaderUserID diaktifkan, tambahkan ke SELECT list:
+    // query := `SELECT image_id, storage_path, filename_original, mime_type, size_bytes, uploaded_at, uploader_user_id
+    //           FROM images WHERE image_id = $1`
+    query := `SELECT image_id, storage_path, filename_original, mime_type, size_bytes, uploaded_at
               FROM images WHERE image_id = $1`
-	err := db.QueryRowContext(ctx, query, id).Scan(
-		&img.ImageID, &img.StoragePath, &img.FilenameOriginal, &img.MimeType, &img.SizeBytes, &img.UploadedAt,
-		// &img.UploaderUserID, // Jika UploaderUserID diaktifkan
-	)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return nil, errors.New("image not found")
-		}
-		return nil, err
-	}
-	return &img, nil
+    err := db.QueryRowContext(ctx, query, id).Scan(
+        &img.ImageID, &img.StoragePath, &img.FilenameOriginal, &img.MimeType, &img.SizeBytes, &img.UploadedAt,
+        // &img.UploaderUserID, // Jika UploaderUserID diaktifkan
+    )
+    if err != nil {
+        if errors.Is(err, sql.ErrNoRows) { // Lebih baik menggunakan errors.Is
+            return nil, errors.New("image not found")
+        }
+        return nil, fmt.Errorf("error getting image by ID %d: %w", id, err)
+    }
+    return &img, nil
 }
 
-// Fungsi lain seperti DeleteImage, dll.
-// DeleteImage akan berguna jika sebuah gambar tidak lagi direferensikan atau perlu dihapus secara eksplisit.
-func DeleteImage(ctx context.Context, db *sql.DB, id int64) error {
-	// Penting: Sebelum menghapus dari DB, Anda juga harus menghapus file fisiknya dari storage.
-	// Logika itu sebaiknya ada di server handler, bukan di sini.
-	// Fungsi ini hanya menghapus record dari database.
-	query := `DELETE FROM images WHERE image_id = $1`
-	res, err := db.ExecContext(ctx, query, id)
-	if err != nil {
-		return err
-	}
-	count, err := res.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if count == 0 {
-		return errors.New("no image record deleted or image not found")
-	}
-	return nil
+// DeleteImageTx menghapus record gambar sebagai bagian dari transaksi yang ada.
+// Pertimbangkan apakah Anda memerlukan versi Tx atau non-Tx tergantung kasus penggunaan.
+// Biasanya, penghapusan gambar juga terkait dengan penghapusan entitas lain.
+func DeleteImageTx(ctx context.Context, tx *sql.Tx, id int64) error {
+    // Penting: Logika untuk menghapus file fisik dari storage sebaiknya ada di server handler
+    // sebelum memanggil fungsi ini.
+    query := `DELETE FROM images WHERE image_id = $1`
+    res, err := tx.ExecContext(ctx, query, id)
+    if err != nil {
+        return fmt.Errorf("error deleting image ID %d in tx: %w", id, err)
+    }
+    count, err := res.RowsAffected()
+    if err != nil {
+        return fmt.Errorf("error getting rows affected for image ID %d delete in tx: %w", id, err)
+    }
+    if count == 0 {
+        return errors.New("no image record deleted in tx or image not found")
+    }
+    return nil
 }
 
-// UpdateImage mungkin jarang diperlukan kecuali untuk metadata (misalnya, mengubah filename_original).
-// Mengubah storage_path, mime_type, atau size_bytes biasanya berarti file itu sendiri telah berubah,
-// yang mungkin lebih cocok ditangani sebagai upload baru dan penghapusan yang lama.
-func UpdateImageMetadata(ctx context.Context, db *sql.DB, id int64, newFilenameOriginal string) error {
-	query := `UPDATE images SET filename_original = $1 WHERE image_id = $2`
-	res, err := db.ExecContext(ctx, query, newFilenameOriginal, id)
-	if err != nil {
-		return err
-	}
-	count, err := res.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if count == 0 {
-		return errors.New("no image record updated or image not found")
-	}
-	return nil
+// UpdateImageMetadataTx memperbarui metadata gambar sebagai bagian dari transaksi yang ada.
+func UpdateImageMetadataTx(ctx context.Context, tx *sql.Tx, id int64, newFilenameOriginal string) error {
+    query := `UPDATE images SET filename_original = $1 WHERE image_id = $2`
+    res, err := tx.ExecContext(ctx, query, newFilenameOriginal, id)
+    if err != nil {
+        return fmt.Errorf("error updating image metadata for ID %d in tx: %w", id, err)
+    }
+    count, err := res.RowsAffected()
+    if err != nil {
+        return fmt.Errorf("error getting rows affected for image ID %d metadata update in tx: %w", id, err)
+    }
+    if count == 0 {
+        return errors.New("no image record updated in tx or image not found")
+    }
+    return nil
 }

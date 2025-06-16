@@ -1,16 +1,32 @@
 package database
 
 import (
-	"context"
-	"database/sql"
-	"errors"
-	"time"
+    "context"
+    "database/sql"
+    "errors"
+    "fmt"
+    "time"
 )
 
 type Admin struct {
     UserID     string    `json:"user_id"` // uuid
     AdminLevel int       `json:"admin_level"`
     CreatedAt  time.Time `json:"created_at"`
+}
+
+func IsUserAdmin(db *sql.DB, userID string) (bool, error) {
+    query := `SELECT EXISTS(SELECT 1 FROM admins WHERE user_id = $1)`
+    var isAdmin bool
+    err := db.QueryRow(query, userID).Scan(&isAdmin)
+    if err != nil {
+        if err == sql.ErrNoRows {
+            // Ini seharusnya tidak terjadi dengan EXISTS, tapi untuk keamanan
+            return false, nil
+        }
+        // log.Printf("Error querying admin status for UserID %s: %v", userID, err) // Opsional: log error
+        return false, fmt.Errorf("error checking admin status: %w", err)
+    }
+    return isAdmin, nil
 }
 
 func CreateAdmin(ctx context.Context, db *sql.DB, a *Admin) error {

@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/gorilla/handlers" 
 	"github.com/jaga-project/jaga-backend/internal/database"
 
 	_ "github.com/joho/godotenv/autoload"
@@ -31,9 +32,16 @@ func NewServer() *http.Server {
 		db:   database.New(),
 	}
 
+	allowedOrigins := handlers.AllowedOrigins([]string{"http://localhost:3000", "http://192.168.200.223","http://192.168.200.223:3000","http://192.168.200.206"}) // Tambahkan IP atau domain frontend Anda
+	allowedMethods := handlers.AllowedMethods([]string{"GET", "POST", "PUT", "DELETE", "OPTIONS"})
+	allowedHeaders := handlers.AllowedHeaders([]string{"Content-Type", "Authorization", "X-Requested-With"})
+	allowCredentials := handlers.AllowCredentials()
+
+	mainHandler := newServer.RegisterRoutes()
+
 	server := &http.Server{
 		Addr:         fmt.Sprintf(":%d", newServer.port),
-		Handler:      newServer.RegisterRoutes(), // Pastikan handler diaktifkan jika sudah ada
+		Handler:      handlers.CORS(allowedOrigins, allowedMethods, allowedHeaders, allowCredentials)(mainHandler),
 		IdleTimeout:  time.Minute,
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 30 * time.Second,

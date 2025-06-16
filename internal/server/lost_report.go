@@ -1,66 +1,295 @@
 package server
 
 import (
+	"context"
+	"database/sql"
 	"encoding/json"
+	"fmt"
+	"io"
+	"mime/multipart"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/gorilla/mux"
 	"github.com/jaga-project/jaga-backend/internal/database"
-	"github.com/jaga-project/jaga-backend/internal/middleware" // Import middleware untuk context key
+	"github.com/jaga-project/jaga-backend/internal/middleware"
 )
 
 func (s *Server) handleCreateLostReport() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		var lr database.LostReport
-		if err := json.NewDecoder(r.Body).Decode(&lr); err != nil {
-			http.Error(w, "Invalid request payload: "+err.Error(), http.StatusBadRequest)
+		fmt.Println("DEBUG: handleCreateLostReport - Start")
+
+		// Definisikan batas ukuran file per bukti dan total ukuran form
+		const maxEvidenceFileSize = 5 * 1024 * 1024 // 5MB per file bukti
+		const extraFormDataSize = 1 * 1024 * 1024   // 1MB untuk field teks lainnya (sesuaikan)
+		maxTotalSize := extraFormDataSize + 2*maxEvidenceFileSize
+
+		fmt.Printf("DEBUG: handleCreateLostReport - Parsing multipart form with max size: %d bytes\n", maxTotalSize)
+		if err := r.ParseMultipartForm(int64(maxTotalSize)); err != nil {
+			fmt.Printf("ERROR: handleCreateLostReport - Failed to parse multipart form: %v\n", err)
+			http.Error(w, "Request too large or invalid multipart form: "+err.Error(), http.StatusBadRequest)
 			return
 		}
 
-		// Ambil UserID dari context yang di-set oleh JWTMiddleware
+		var lr database.LostReport
+		var err error // Untuk error umum di luar transaksi
+
 		requestingUserID, ok := r.Context().Value(middleware.UserIDContextKey).(string)
 		if !ok || requestingUserID == "" {
-			// Ini seharusnya tidak terjadi jika middleware bekerja dengan benar
 			http.Error(w, "Unauthorized: User ID not found in token", http.StatusUnauthorized)
 			return
 		}
-		lr.UserID = requestingUserID // Set UserID laporan dengan ID dari token
+		lr.UserID = requestingUserID
 
-		// Validasi: Timestamp (waktu kejadian) wajib diisi oleh client.
-		if lr.Timestamp.IsZero() {
-			http.Error(w, "timestamp (waktu kejadian) is required", http.StatusBadRequest)
+		timestampStr := r.FormValue("timestamp")
+		if timestampStr == "" {
+			lr.Timestamp = time.Now()
+		} else {
+			lr.Timestamp, err = time.Parse(time.RFC3339, timestampStr)
+			if err != nil {
+				http.Error(w, fmt.Sprintf("Invalid timestamp format. Use RFC3339. Error: %v", err), http.StatusBadRequest)
+				return
+			}
+			if lr.Timestamp.After(time.Now().Add(5 * time.Minute)) {
+				http.Error(w, "timestamp (waktu kejadian) cannot be unreasonably in the future", http.StatusBadRequest)
+				return
+			}
+		}
+
+		vehicleIDStr := r.FormValue("vehicle_id")
+		if vehicleIDStr == "" {
+			http.Error(w, "vehicle_id is required", http.StatusBadRequest)
 			return
 		}
-		// Validasi tambahan (opsional): Pastikan timestamp tidak di masa depan
-		if lr.Timestamp.After(time.Now().Add(5 * time.Minute)) { // Toleransi 5 menit
-			http.Error(w, "timestamp (waktu kejadian) cannot be unreasonably in the future", http.StatusBadRequest)
+		lr.VehicleID, err = strconv.Atoi(vehicleIDStr)
+		if err != nil {
+			http.Error(w, "Invalid vehicle_id: must be an integer", http.StatusBadRequest)
 			return
 		}
 
-		// Asumsi: lr.EvidenceImageID (jika ada) sudah merupakan ID dari gambar yang valid
-		// yang telah diunggah sebelumnya dan disimpan di tabel 'images'.
-		// Asumsi: lr.VehicleID juga sudah divalidasi atau akan divalidasi
-		// bahwa vehicle tersebut ada dan milik user yang bersangkutan (jika perlu).
-
-		if err := database.CreateLostReport(r.Context(), s.db.Get(), &lr); err != nil {
-			http.Error(w, "Failed to create lost report: "+err.Error(), http.StatusInternalServerError)
+		lr.Address = r.FormValue("address")
+		if lr.Address == "" {
+			http.Error(w, "address is required", http.StatusBadRequest)
 			return
 		}
+
+		statusStr := r.FormValue("status")
+		if statusStr != "" {
+			lr.Status = statusStr
+		} else {
+			lr.Status = database.StatusLostReportBelumDiproses
+		}
+
+		detectedIDStr := r.FormValue("detected_id")
+		if detectedIDStr != "" {
+			detectedIDVal, errAtoi := strconv.Atoi(detectedIDStr)
+			if errAtoi != nil {
+				http.Error(w, "Invalid detected_id: must be an integer", http.StatusBadRequest)
+				return
+			}
+			lr.DetectedID = &detectedIDVal
+		}
+
+		fmt.Println("DEBUG: handleCreateLostReport - Form values parsed, starting transaction")
+		tx, err := s.db.Get().BeginTx(r.Context(), nil)
+		if err != nil {
+			fmt.Printf("ERROR: handleCreateLostReport - Failed to start database transaction: %v\n", err)
+			http.Error(w, "Failed to start database transaction", http.StatusInternalServerError)
+			return
+		}
+		var txErr error // Untuk error dalam scope transaksi
+		var motorEvidenceImageStoragePath string
+		var personEvidenceImageStoragePath string
+
+		defer func() {
+			if p := recover(); p != nil {
+				fmt.Printf("PANIC: handleCreateLostReport - Rolling back transaction due to panic: %v\n", p)
+				tx.Rollback()
+				if motorEvidenceImageStoragePath != "" { os.Remove(motorEvidenceImageStoragePath) }
+				if personEvidenceImageStoragePath != "" { os.Remove(personEvidenceImageStoragePath) }
+				panic(p)
+			} else if txErr != nil {
+				fmt.Printf("ERROR: handleCreateLostReport - Rolling back transaction due to error: %v\n", txErr)
+				tx.Rollback()
+				if motorEvidenceImageStoragePath != "" { os.Remove(motorEvidenceImageStoragePath) }
+				if personEvidenceImageStoragePath != "" { os.Remove(personEvidenceImageStoragePath) }
+			}
+		}()
+
+		// Proses upload gambar bukti motor (motor_evidence_image) jika ada
+		fmt.Println("DEBUG: handleCreateLostReport - Attempting to get motor_evidence_image")
+		motorFile, motorHandler, errMotorFile := r.FormFile("motor_evidence_image")
+		if errMotorFile == nil {
+			fmt.Printf("DEBUG: handleCreateLostReport - motor_evidence_image found: %s, size: %d\n", motorHandler.Filename, motorHandler.Size)
+			defer motorFile.Close()
+			imgIDResult, storagePath, errUpload := s.uploadAndCreateImageRecordLr(r.Context(), tx, motorFile, motorHandler, "motor_evidence_image")
+			if errUpload != nil {
+				txErr = fmt.Errorf("failed to process motor_evidence_image: %w", errUpload)
+				fmt.Printf("ERROR: handleCreateLostReport - %v\n", txErr)
+				http.Error(w, txErr.Error(), determineImageUploadErrorStatusCodeLr(errUpload))
+				return
+			}
+			motorEvidenceImageStoragePath = storagePath
+			if imgIDResult.Valid {
+				lr.MotorEvidenceImageID = &imgIDResult.Int64
+				fmt.Printf("DEBUG: handleCreateLostReport - motor_evidence_image processed, ID: %d\n", *lr.MotorEvidenceImageID)
+			}
+		} else if errMotorFile != http.ErrMissingFile {
+			txErr = fmt.Errorf("error retrieving motor_evidence_image: %w", errMotorFile)
+			fmt.Printf("ERROR: handleCreateLostReport - %v\n", txErr)
+			http.Error(w, txErr.Error(), http.StatusBadRequest)
+			return
+		} else {
+			fmt.Println("DEBUG: handleCreateLostReport - motor_evidence_image not provided (optional)")
+		}
+
+		// Proses upload gambar bukti orang (person_evidence_image) jika ada
+		fmt.Println("DEBUG: handleCreateLostReport - Attempting to get person_evidence_image")
+		personFile, personHandler, errPersonFile := r.FormFile("person_evidence_image")
+		if errPersonFile == nil {
+			fmt.Printf("DEBUG: handleCreateLostReport - person_evidence_image found: %s, size: %d\n", personHandler.Filename, personHandler.Size)
+			defer personFile.Close()
+			imgIDResult, storagePath, errUpload := s.uploadAndCreateImageRecordLr(r.Context(), tx, personFile, personHandler, "person_evidence_image")
+			if errUpload != nil {
+				txErr = fmt.Errorf("failed to process person_evidence_image: %w", errUpload)
+				fmt.Printf("ERROR: handleCreateLostReport - %v\n", txErr)
+				http.Error(w, txErr.Error(), determineImageUploadErrorStatusCodeLr(errUpload))
+				return
+			}
+			personEvidenceImageStoragePath = storagePath
+			if imgIDResult.Valid {
+				lr.PersonEvidenceImageID = &imgIDResult.Int64
+				fmt.Printf("DEBUG: handleCreateLostReport - person_evidence_image processed, ID: %d\n", *lr.PersonEvidenceImageID)
+			}
+		} else if errPersonFile != http.ErrMissingFile {
+			txErr = fmt.Errorf("error retrieving person_evidence_image: %w", errPersonFile)
+			fmt.Printf("ERROR: handleCreateLostReport - %v\n", txErr)
+			http.Error(w, txErr.Error(), http.StatusBadRequest)
+			return
+		} else {
+			fmt.Println("DEBUG: handleCreateLostReport - person_evidence_image not provided (optional)")
+		}
+
+		fmt.Printf("DEBUG: handleCreateLostReport - Attempting to create lost report record: %+v\n", lr)
+		txErr = database.CreateLostReportTx(r.Context(), tx, &lr)
+		if txErr != nil {
+			fmt.Printf("ERROR: handleCreateLostReport - Failed to create lost report record in transaction: %v\n", txErr)
+			http.Error(w, "Failed to create lost report record: "+txErr.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		fmt.Println("DEBUG: handleCreateLostReport - Attempting to commit transaction")
+		txErr = tx.Commit()
+		if txErr != nil {
+			fmt.Printf("ERROR: handleCreateLostReport - Failed to commit database transaction: %v\n", txErr)
+			http.Error(w, "Failed to commit database transaction", http.StatusInternalServerError)
+			return
+		}
+
+		fmt.Printf("DEBUG: handleCreateLostReport - Successfully created lost report: %+v\n", lr)
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
 		json.NewEncoder(w).Encode(lr)
+		fmt.Println("DEBUG: handleCreateLostReport - End")
 	}
+}
+
+// Helper untuk menentukan status code error upload gambar (contoh)
+func determineImageUploadErrorStatusCodeLr(err error) int {
+	if err == nil {
+		return http.StatusOK // Seharusnya tidak dipanggil dengan err nil, tapi untuk kelengkapan
+	}
+	errMsg := strings.ToLower(err.Error()) // Konversi ke lowercase untuk pencocokan yang lebih fleksibel
+	if strings.Contains(errMsg, "file is empty") ||
+		strings.Contains(errMsg, "size exceeds") ||
+		strings.Contains(errMsg, "invalid type") || // Dari error validasi MIME
+		strings.Contains(errMsg, "mime type validation failed") { // Dari error validasi MIME
+		return http.StatusBadRequest
+	}
+	return http.StatusInternalServerError
+}
+
+// uploadAndCreateImageRecordLr menangani validasi, penyimpanan file, dan pembuatan record di tabel 'images'.
+func (s *Server) uploadAndCreateImageRecordLr(ctx context.Context, tx *sql.Tx, file multipart.File, handler *multipart.FileHeader, formFieldName string) (sql.NullInt64, string, error) {
+    fmt.Printf("DEBUG: uploadAndCreateImageRecordLr called for %s, filename: %s, size: %d\n", formFieldName, handler.Filename, handler.Size)
+
+    if handler.Size == 0 {
+        return sql.NullInt64{}, "", fmt.Errorf("file for %s is empty", formFieldName)
+    }
+
+    // Batas ukuran file spesifik untuk bukti laporan kehilangan
+    const maxEvidenceFileSize = 5 * 1024 * 1024 // 5 MB (bisa berbeda dari maxFileSizeDetected)
+    if handler.Size > maxEvidenceFileSize {
+        return sql.NullInt64{}, "", fmt.Errorf("%s file size (%d bytes) exceeds %dMB limit", formFieldName, handler.Size, maxEvidenceFileSize/(1024*1024))
+    }
+
+    // Panggil fungsi validasi MIME terpusat
+    // DefaultAllowedMimeTypes dan ValidateMimeType diasumsikan ada di package server (misalnya, dari image.go)
+    validatedMimeType, errMime := ValidateMimeType(file, handler, DefaultAllowedMimeTypes)
+    if errMime != nil {
+        return sql.NullInt64{}, "", fmt.Errorf("MIME type validation failed for %s: %w", formFieldName, errMime)
+    }
+    // file pointer sudah di-reset oleh ValidateMimeType jika validasi dari konten,
+    // atau tidak berubah jika dari header. Kita akan reset lagi sebelum io.Copy untuk memastikan.
+
+    originalFilename := handler.Filename
+    fileExtension := filepath.Ext(originalFilename)
+    uniqueFilename := fmt.Sprintf("%s%s", uuid.New().String(), fileExtension)
+
+    // imageUploadPath diasumsikan sebagai konstanta yang dapat diakses dari package server (misalnya, image.go)
+    storageDir := imageUploadPath
+    storagePath := filepath.Join(storageDir, uniqueFilename)
+
+    if err := os.MkdirAll(storageDir, os.ModePerm); err != nil {
+        return sql.NullInt64{}, "", fmt.Errorf("failed to create upload directory '%s' for %s: %w", storageDir, formFieldName, err)
+    }
+
+    dst, err := os.Create(storagePath)
+    if err != nil {
+        return sql.NullInt64{}, storagePath, fmt.Errorf("failed to create destination file '%s' for %s: %w", storagePath, formFieldName, err)
+    }
+    defer dst.Close()
+
+    // Pastikan file pointer ada di awal sebelum io.Copy
+    if _, errSeek := file.Seek(0, io.SeekStart); errSeek != nil {
+        os.Remove(storagePath) // Hapus file yang mungkin sudah dibuat
+        return sql.NullInt64{}, storagePath, fmt.Errorf("failed to reset file pointer before copy for %s: %w", formFieldName, errSeek)
+    }
+
+	bytesCopied, err := io.Copy(dst, file)
+	if err != nil {
+		os.Remove(storagePath) // Hapus file parsial jika copy gagal
+		return sql.NullInt64{}, storagePath, fmt.Errorf("failed to copy %s file content to '%s': %w", formFieldName, storagePath, err)
+	}
+	fmt.Printf("DEBUG: Successfully saved %s to %s (%d bytes copied)\n", formFieldName, storagePath, bytesCopied)
+
+    imgRecord := database.Image{
+        StoragePath:      filepath.ToSlash(storagePath), // Simpan dengan forward slashes
+        FilenameOriginal: originalFilename,
+        MimeType:         validatedMimeType, // Gunakan tipe MIME yang sudah divalidasi
+        SizeBytes:        bytesCopied,       // Gunakan bytesCopied sebagai ukuran file yang sebenarnya disimpan
+    }
+
+    if err := database.CreateImageTx(ctx, tx, &imgRecord); err != nil {
+        os.Remove(storagePath) // Hapus file fisik jika insert DB gagal
+        return sql.NullInt64{}, storagePath, fmt.Errorf("failed to save %s image metadata to DB: %w", formFieldName, err)
+    }
+    fmt.Printf("DEBUG: Successfully created image record for %s. ImageID: %d\n", formFieldName, imgRecord.ImageID)
+
+    return sql.NullInt64{Int64: imgRecord.ImageID, Valid: true}, storagePath, nil
 }
 
 func (s *Server) handleGetLostReport() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// Ambil UserID dari context untuk potensi filter berdasarkan user atau role
-		// requestingUserID, _ := r.Context().Value(middleware.UserIDContextKey).(string)
-		// isAdmin, _ := r.Context().Value(middleware.AdminStatusContextKey).(bool)
+		vars := mux.Vars(r)
+		idStr, idProvided := vars["id"]
 
-		idStr := mux.Vars(r)["id"]
-		if idStr != "" { // Get by ID
+		if idProvided && idStr != "" { // Get by ID
 			id, err := strconv.Atoi(idStr)
 			if err != nil {
 				http.Error(w, "invalid lost_id: must be an integer", http.StatusBadRequest)
@@ -71,31 +300,39 @@ func (s *Server) handleGetLostReport() http.HandlerFunc {
 				if err.Error() == "lost_report not found" {
 					http.Error(w, "Lost report not found", http.StatusNotFound)
 				} else {
+					fmt.Printf("ERROR: Failed to get lost report by ID %d: %v\n", id, err)
 					http.Error(w, "Failed to get lost report: "+err.Error(), http.StatusInternalServerError)
 				}
 				return
 			}
-			// Otorisasi: User hanya bisa melihat laporannya sendiri, kecuali admin
-			// if !isAdmin && lr.UserID != requestingUserID {
-			// 	http.Error(w, "Forbidden: You can only view your own reports", http.StatusForbidden)
-			// 	return
-			// }
+			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode(lr)
 			return
 		}
 
-		// List all (mungkin hanya untuk admin atau dengan filter user)
-		// if !isAdmin {
-		//  // Filter berdasarkan requestingUserID jika bukan admin
-		//  // list, err := database.ListLostReportsByUserID(r.Context(), s.db.Get(), requestingUserID)
-		// } else {
-		// list, err := database.ListLostReports(r.Context(), s.db.Get())
-		// }
-		list, err := database.ListLostReports(r.Context(), s.db.Get()) // Untuk sekarang, list semua
+		statusFilter := r.URL.Query().Get("status")
+		if statusFilter != "" {
+			isValidStatus := false
+			validStatuses := []string{database.StatusLostReportBelumDiproses, database.StatusLostReportSedangDiproses, database.StatusLostReportSudahDitemukan}
+			for _, vs := range validStatuses {
+				if statusFilter == vs {
+					isValidStatus = true
+					break
+				}
+			}
+			if !isValidStatus && statusFilter != "" {
+				http.Error(w, fmt.Sprintf("Invalid status filter. Valid statuses are: %s, %s, %s", database.StatusLostReportBelumDiproses, database.StatusLostReportSedangDiproses, database.StatusLostReportSudahDitemukan), http.StatusBadRequest)
+				return
+			}
+		}
+
+		list, err := database.ListLostReports(r.Context(), s.db.Get(), statusFilter)
 		if err != nil {
+			fmt.Printf("ERROR: Failed to list lost reports (filter: '%s'): %v\n", statusFilter, err)
 			http.Error(w, "Failed to list lost reports: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
+		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(list)
 	}
 }
@@ -109,19 +346,21 @@ func (s *Server) handleUpdateLostReport() http.HandlerFunc {
 			return
 		}
 
-		var lrUpdates database.LostReport // Data dari request body
+		var lrUpdates database.LostReport
+		// Untuk update, kita masih mengharapkan JSON.
+		// Jika Anda ingin mengizinkan upload file baru saat update, handler ini perlu diubah
+		// secara signifikan untuk menangani multipart/form-data juga.
 		if err := json.NewDecoder(r.Body).Decode(&lrUpdates); err != nil {
 			http.Error(w, "Invalid request payload: "+err.Error(), http.StatusBadRequest)
 			return
 		}
 
-		// Ambil UserID dan status Admin dari context
 		requestingUserID, ok := r.Context().Value(middleware.UserIDContextKey).(string)
 		if !ok || requestingUserID == "" {
 			http.Error(w, "Unauthorized: User ID not found in token", http.StatusUnauthorized)
 			return
 		}
-		isAdmin, _ := r.Context().Value(middleware.AdminStatusContextKey).(bool) // Default ke false jika tidak ada
+		isAdmin, _ := r.Context().Value(middleware.AdminStatusContextKey).(bool)
 
 		existingLR, err := database.GetLostReportByID(r.Context(), s.db.Get(), id)
 		if err != nil {
@@ -133,28 +372,32 @@ func (s *Server) handleUpdateLostReport() http.HandlerFunc {
 			return
 		}
 
-		reportToUpdate := *existingLR // Salin semua field dari existingLR
+		reportToUpdate := *existingLR
 		updatedByOwner := false
 		updatedByAdmin := false
 
-		// Logika untuk Admin: Admin bisa mengubah status
 		if isAdmin {
 			if lrUpdates.Status != "" && lrUpdates.Status != existingLR.Status {
-				// Validasi status jika perlu (misalnya, pastikan status ada dalam daftar enum yang valid)
-				// if !isValidStatus(lrUpdates.Status) {
-				// 	http.Error(w, "Invalid status value", http.StatusBadRequest)
-				// 	return
-				// }
+				validStatuses := []string{database.StatusLostReportBelumDiproses, database.StatusLostReportSedangDiproses, database.StatusLostReportSudahDitemukan}
+				isValidNewStatus := false
+				for _, vs := range validStatuses {
+					if lrUpdates.Status == vs {
+						isValidNewStatus = true
+						break
+					}
+				}
+				if !isValidNewStatus {
+					http.Error(w, fmt.Sprintf("Invalid status value. Valid statuses are: %s, %s, %s", database.StatusLostReportBelumDiproses, database.StatusLostReportSedangDiproses, database.StatusLostReportSudahDitemukan), http.StatusBadRequest)
+					return
+				}
 				reportToUpdate.Status = lrUpdates.Status
 				updatedByAdmin = true
 			}
 		}
 
-		// Logika untuk Pemilik Laporan: Pemilik bisa mengubah field tertentu
 		if existingLR.UserID == requestingUserID {
-			// Timestamp
 			if !lrUpdates.Timestamp.IsZero() && lrUpdates.Timestamp != existingLR.Timestamp {
-				if lrUpdates.Timestamp.After(time.Now().Add(5 * time.Minute)) { // Toleransi 5 menit
+				if lrUpdates.Timestamp.After(time.Now().Add(5 * time.Minute)) {
 					http.Error(w, "timestamp (waktu kejadian) cannot be unreasonably in the future", http.StatusBadRequest)
 					return
 				}
@@ -162,66 +405,49 @@ func (s *Server) handleUpdateLostReport() http.HandlerFunc {
 				updatedByOwner = true
 			}
 
-			// Address
 			if lrUpdates.Address != "" && lrUpdates.Address != existingLR.Address {
 				reportToUpdate.Address = lrUpdates.Address
 				updatedByOwner = true
 			}
 
-			// VehicleID
 			if lrUpdates.VehicleID != 0 && lrUpdates.VehicleID != existingLR.VehicleID {
-				// TODO: Validasi apakah VehicleID ini milik requestingUserID
-				// if !isValidVehicleForUser(r.Context(), s.db.Get(), requestingUserID, lrUpdates.VehicleID) {
-				// 	http.Error(w, "Invalid vehicle_id for this user", http.StatusBadRequest)
-				// 	return
-				// }
 				reportToUpdate.VehicleID = lrUpdates.VehicleID
 				updatedByOwner = true
 			}
-
-			// EvidenceImageID
-			// Jika lrUpdates.EvidenceImageID adalah nil, itu bisa berarti "hapus" atau "tidak ada perubahan".
-			// Kita akan menganggapnya "gunakan nilai dari request jika ada, termasuk null".
-			// Ini berarti jika client mengirim "evidence_image_id": null, maka akan di-set ke null.
-			// Jika client tidak mengirim field "evidence_image_id", maka reportToUpdate.EvidenceImageID akan
-			// tetap dari existingLR.EvidenceImageID karena lrUpdates.EvidenceImageID akan nil (default untuk pointer).
-			// Jadi, kita perlu cara untuk tahu apakah field itu *benar-benar* dikirim.
-			// Untuk sementara, kita akan update jika lrUpdates.EvidenceImageID berbeda dari existingLR.EvidenceImageID
-			// Ini tidak ideal.
-			// Mari kita asumsikan jika client mengirim fieldnya, kita pakai.
-			// Jika tidak, kita pertahankan yang lama. Ini sulit tanpa struct request khusus.
-			// Untuk sekarang, kita akan update jika lrUpdates.EvidenceImageID adalah non-nil.
-			// Jika ingin mengizinkan penghapusan dengan mengirim null, maka:
-			// reportToUpdate.EvidenceImageID = lrUpdates.EvidenceImageID;
-			// Mari kita gunakan ini:
-			if lrUpdates.EvidenceImageID != existingLR.EvidenceImageID { // Ini akan menangkap perubahan ke nil atau ke ID baru
-				reportToUpdate.EvidenceImageID = lrUpdates.EvidenceImageID
+			
+			// Update ID gambar jika dikirim dalam JSON
+			if lrUpdates.MotorEvidenceImageID != existingLR.MotorEvidenceImageID {
+				reportToUpdate.MotorEvidenceImageID = lrUpdates.MotorEvidenceImageID
+				updatedByOwner = true
+			}
+			if lrUpdates.PersonEvidenceImageID != existingLR.PersonEvidenceImageID {
+				reportToUpdate.PersonEvidenceImageID = lrUpdates.PersonEvidenceImageID
 				updatedByOwner = true
 			}
 		} else {
-			// Jika bukan admin dan bukan pemilik, tidak boleh update field pemilik
-			if lrUpdates.Timestamp != existingLR.Timestamp && !lrUpdates.Timestamp.IsZero() ||
-				lrUpdates.Address != existingLR.Address && lrUpdates.Address != "" ||
-				lrUpdates.VehicleID != existingLR.VehicleID && lrUpdates.VehicleID != 0 ||
-				lrUpdates.EvidenceImageID != existingLR.EvidenceImageID {
-				// Jika ada upaya mengubah field pemilik oleh non-pemilik (dan bukan admin yang mengubah status)
-				if !isAdmin || (isAdmin && lrUpdates.Status == "" || lrUpdates.Status == existingLR.Status) { // Jika admin tidak mengubah status
-					http.Error(w, "Forbidden: You can only update your own report's details", http.StatusForbidden)
+			if !isAdmin {
+				http.Error(w, "Forbidden: You can only update your own report's details or an admin can update status.", http.StatusForbidden)
+				return
+			}
+			if (lrUpdates.Timestamp != existingLR.Timestamp && !lrUpdates.Timestamp.IsZero()) ||
+				(lrUpdates.Address != existingLR.Address && lrUpdates.Address != "") ||
+				(lrUpdates.VehicleID != existingLR.VehicleID && lrUpdates.VehicleID != 0) ||
+				(lrUpdates.MotorEvidenceImageID != existingLR.MotorEvidenceImageID) ||
+				(lrUpdates.PersonEvidenceImageID != existingLR.PersonEvidenceImageID) {
+				if !updatedByAdmin {
+					http.Error(w, "Forbidden: Admin can only update status or owner can update details.", http.StatusForbidden)
 					return
 				}
 			}
 		}
 
-		// Pastikan UserID tidak diubah
 		reportToUpdate.UserID = existingLR.UserID
-		// Diasumsikan DetectedID tidak diubah melalui endpoint ini oleh user/admin
 		reportToUpdate.DetectedID = existingLR.DetectedID
 
-		// Hanya lakukan update ke database jika ada perubahan
 		if !updatedByAdmin && !updatedByOwner {
-			// Tidak ada perubahan yang diizinkan atau tidak ada data yang relevan untuk diubah
-			w.WriteHeader(http.StatusOK) // Atau http.StatusNotModified jika Anda mau
-			json.NewEncoder(w).Encode(existingLR) // Kirim data lama karena tidak ada perubahan
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(existingLR)
 			return
 		}
 
@@ -232,10 +458,12 @@ func (s *Server) handleUpdateLostReport() http.HandlerFunc {
 
 		updatedReport, err := database.GetLostReportByID(r.Context(), s.db.Get(), id)
 		if err != nil {
+			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
-			json.NewEncoder(w).Encode(reportToUpdate) // Kirim data yang kita punya jika gagal fetch
+			json.NewEncoder(w).Encode(reportToUpdate)
 			return
 		}
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		json.NewEncoder(w).Encode(updatedReport)
 	}
@@ -255,7 +483,8 @@ func (s *Server) handleDeleteLostReport() http.HandlerFunc {
 			http.Error(w, "Unauthorized: User ID not found in token", http.StatusUnauthorized)
 			return
 		}
-		// isAdmin, _ := r.Context().Value(middleware.AdminStatusContextKey).(bool)
+		isAdmin, _ := r.Context().Value(middleware.AdminStatusContextKey).(bool)
+
 
 		existingLR, err := database.GetLostReportByID(r.Context(), s.db.Get(), id)
 		if err != nil {
@@ -267,15 +496,13 @@ func (s *Server) handleDeleteLostReport() http.HandlerFunc {
 			return
 		}
 
-		// Otorisasi: Hanya pemilik laporan atau admin yang boleh delete
-		// if !isAdmin && existingLR.UserID != requestingUserID {
-		// 	http.Error(w, "Forbidden: You can only delete your own reports", http.StatusForbidden)
-		// 	return
-		// }
-		if existingLR.UserID != requestingUserID { // Sederhanakan: hanya pemilik
-			http.Error(w, "Forbidden: You can only delete your own reports", http.StatusForbidden)
+		if !isAdmin && existingLR.UserID != requestingUserID {
+			http.Error(w, "Forbidden: You can only delete your own reports or an admin can delete any report.", http.StatusForbidden)
 			return
 		}
+
+		// TODO: Pertimbangkan untuk menghapus gambar terkait dari storage jika ada (existingLR.MotorEvidenceImageID dan existingLR.PersonEvidenceImageID)
+		// dan juga dari tabel 'images'. Ini memerlukan logika tambahan dan transaksi.
 
 		if err := database.DeleteLostReport(r.Context(), s.db.Get(), id); err != nil {
 			http.Error(w, "Failed to delete lost report: "+err.Error(), http.StatusInternalServerError)
@@ -286,11 +513,10 @@ func (s *Server) handleDeleteLostReport() http.HandlerFunc {
 }
 
 // RegisterLostReportRoutes mendaftarkan semua rute terkait lost_report.
-// Sekarang semua rute ini akan dilindungi oleh middleware JWT jika didaftarkan di bawah apiRouter.
 func (s *Server) RegisterLostReportRoutes(r *mux.Router) {
 	r.HandleFunc("/lost_reports", s.handleCreateLostReport()).Methods("POST")
-	r.HandleFunc("/lost_reports", s.handleGetLostReport()).Methods("GET") // List all
-	r.HandleFunc("/lost_reports/{id}", s.handleGetLostReport()).Methods("GET") // Get by ID
+	r.HandleFunc("/lost_reports", s.handleGetLostReport()).Methods("GET")
+	r.HandleFunc("/lost_reports/{id}", s.handleGetLostReport()).Methods("GET")
 	r.HandleFunc("/lost_reports/{id}", s.handleUpdateLostReport()).Methods("PUT")
 	r.HandleFunc("/lost_reports/{id}", s.handleDeleteLostReport()).Methods("DELETE")
 }
