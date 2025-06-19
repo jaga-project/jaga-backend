@@ -32,7 +32,7 @@ func NewServer() *http.Server {
 		db:   database.New(),
 	}
 
-	allowedOrigins := handlers.AllowedOrigins([]string{"http://localhost:3000", "http://192.168.200.223","http://192.168.200.223:3000","http://192.168.200.206"}) // Tambahkan IP atau domain frontend Anda
+	allowedOrigins := handlers.AllowedOrigins([]string{"http://localhost:3000", "http://100.115.148.124","http://100.115.148.124:3000","http://100.72.88.10"}) // Tambahkan IP atau domain frontend Anda
 	allowedMethods := handlers.AllowedMethods([]string{"GET", "POST", "PUT", "DELETE", "OPTIONS"})
 	allowedHeaders := handlers.AllowedHeaders([]string{"Content-Type", "Authorization", "X-Requested-With"})
 	allowCredentials := handlers.AllowCredentials()

@@ -108,7 +108,6 @@ func ValidateMimeType(file multipart.File, handler *multipart.FileHeader, allowe
     return "", fmt.Errorf("invalid file type for '%s'. Header: '%s', Detected: '%s'. Allowed: %s", handler.Filename, headerMimeType, detectedMimeType, strings.Join(allowedKeys, ", "))
 }
 
-
 func ensureUploadDir(dir string) error {
     err := os.MkdirAll(dir, os.ModePerm) 
     if err != nil {
@@ -156,7 +155,6 @@ func (s *Server) handleImageUpload() http.HandlerFunc {
             http.Error(w, "Internal server error: could not process file", http.StatusInternalServerError)
             return
         }
-
 
         originalFilename := handler.Filename
         fileExtension := filepath.Ext(originalFilename)

@@ -20,6 +20,8 @@ type Image struct {
 
 // Querier adalah interface yang bisa berupa *sql.DB atau *sql.Tx
 type Querier interface {
+    ExecContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error)
+    QueryContext(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error) // Tambahkan ini
     QueryRowContext(ctx context.Context, query string, args ...interface{}) *sql.Row
 }
 

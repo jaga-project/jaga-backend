@@ -6,546 +6,656 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io" // Ditambahkan
+	"io"
 	"mime/multipart"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
-	"strings" // Ditambahkan
+	"strings"
 
-	"github.com/google/uuid" // Ditambahkan
+	"github.com/google/uuid"
 	"github.com/gorilla/mux"
 	"github.com/jaga-project/jaga-backend/internal/database"
 	"github.com/jaga-project/jaga-backend/internal/middleware"
 )
 
-const maxFileSizeVehicle = 5 * 1024 * 1024 // 5 MB per file (STNK, KK)
+const maxFileSizeVehicle = 5 * 1024 * 1024       // 5 MB per file (STNK, KK)
 const extraFormDataSizeVehicle = 1 * 1024 * 1024 // 1MB untuk field teks lainnya
+
+// VehicleResponse adalah struct untuk respons JSON dengan URL gambar.
+type VehicleResponse struct {
+    VehicleID    int64                   `json:"vehicle_id"`
+    VehicleName  string                  `json:"vehicle_name"`
+    Color        string                  `json:"color"`
+    UserID       string                  `json:"user_id"`
+    PlateNumber  string                  `json:"plate_number"`
+    STNKImageURL *string                 `json:"stnk_image_url,omitempty"`
+    KKImageURL   *string                 `json:"kk_image_url,omitempty"`
+    Ownership    *database.OwnershipType `json:"ownership,omitempty"`
+}
+
+// Helper untuk mengubah database.Vehicle menjadi VehicleResponse
+func (s *Server) toVehicleResponse(ctx context.Context, dbQuerier database.Querier, v *database.Vehicle) VehicleResponse {
+    response := VehicleResponse{
+        VehicleID:   v.VehicleID,
+        VehicleName: v.VehicleName,
+        Color:       v.Color,
+        UserID:      v.UserID,
+        PlateNumber: v.PlateNumber,
+        //Ownership:   v.Ownership,
+    }
+
+		if v.Ownership.Valid {
+        // Konversi string dari sql.NullString ke database.OwnershipType, lalu ambil alamatnya
+        ownershipValue := database.OwnershipType(v.Ownership.String)
+        response.Ownership = &ownershipValue
+    } else {
+        response.Ownership = nil // Jika NULL di DB, maka nil di response (akan diabaikan oleh omitempty)
+    }
+
+    if v.STNKImageID.Valid {
+        path, err := database.GetImageStoragePath(ctx, dbQuerier, v.STNKImageID.Int64)
+        if err == nil && path != "" {
+            url := "/" + strings.TrimPrefix(path, "/")
+            response.STNKImageURL = &url
+        } else if err != nil && !errors.Is(err, sql.ErrNoRows) {
+            fmt.Printf("WARN: Failed to get STNK image path for vehicle ID %d, image ID %d: %v\n", v.VehicleID, v.STNKImageID.Int64, err)
+        }
+    }
+
+    if v.KKImageID.Valid {
+        path, err := database.GetImageStoragePath(ctx, dbQuerier, v.KKImageID.Int64)
+        if err == nil && path != "" {
+            url := "/" + strings.TrimPrefix(path, "/")
+            response.KKImageURL = &url
+        } else if err != nil && !errors.Is(err, sql.ErrNoRows) {
+            fmt.Printf("WARN: Failed to get KK image path for vehicle ID %d, image ID %d: %v\n", v.VehicleID, v.KKImageID.Int64, err)
+        }
+    }
+    return response
+}
 
 func (s *Server) handleCreateVehicle() http.HandlerFunc {
     return func(w http.ResponseWriter, r *http.Request) {
-        maxTotalSize := extraFormDataSizeVehicle + 2*maxFileSizeVehicle // Untuk 2 file (STNK, KK)
-        if err := r.ParseMultipartForm(int64(maxTotalSize)); err != nil { // Perubahan di sini
-            http.Error(w, "Request too large or invalid multipart form: "+err.Error(), http.StatusBadRequest)
+        maxTotalSize := extraFormDataSizeVehicle + 2*maxFileSizeVehicle
+        if err := r.ParseMultipartForm(int64(maxTotalSize)); err != nil {
+            writeJSONError(w, "Request too large or invalid multipart form: "+err.Error(), http.StatusBadRequest)
             return
         }
 
-		var newVehicle database.Vehicle
-		var err error
+        var newVehicleDB database.Vehicle
+        var err error
 
-		userIDFromCtx, ok := r.Context().Value(middleware.UserIDContextKey).(string)
-		if !ok || userIDFromCtx == "" {
-			http.Error(w, "Unauthorized: User ID not found in context.", http.StatusUnauthorized)
-			return
-		}
+        userIDFromCtx, ok := r.Context().Value(middleware.UserIDContextKey).(string)
+        if !ok || userIDFromCtx == "" {
+            writeJSONError(w, "Unauthorized: User ID not found in context.", http.StatusUnauthorized)
+            return
+        }
 
-		newVehicle.VehicleName = r.FormValue("vehicle_name")
-		newVehicle.Color = r.FormValue("color")
-		newVehicle.UserID = userIDFromCtx
-		newVehicle.PlateNumber = r.FormValue("plate_number")
-		ownershipStr := r.FormValue("ownership")
+        newVehicleDB.VehicleName = r.FormValue("vehicle_name")
+        newVehicleDB.Color = r.FormValue("color")
+        newVehicleDB.UserID = userIDFromCtx
+        newVehicleDB.PlateNumber = r.FormValue("plate_number")
+        ownershipStr := r.FormValue("ownership")
 
-		if newVehicle.VehicleName == "" || newVehicle.PlateNumber == "" {
-			http.Error(w, "vehicle_name and plate_number are required", http.StatusBadRequest)
-			return
-		}
+        if newVehicleDB.VehicleName == "" || newVehicleDB.PlateNumber == "" {
+            writeJSONError(w, "vehicle_name and plate_number are required", http.StatusBadRequest)
+            return
+        }
 
-		// Validasi Ownership
-		if ownershipStr == string(database.OwnershipPribadi) || ownershipStr == string(database.OwnershipKeluarga) {
-			newVehicle.Ownership = database.OwnershipType(ownershipStr)
-		} else {
-			http.Error(w, fmt.Sprintf("Invalid ownership value. Must be '%s' or '%s'", database.OwnershipPribadi, database.OwnershipKeluarga), http.StatusBadRequest)
-			return
-		}
+        if ownershipStr != "" {
+            if ownershipStr == string(database.OwnershipPribadi) || ownershipStr == string(database.OwnershipKeluarga) {
+                newVehicleDB.Ownership = sql.NullString{String: ownershipStr, Valid: true}
+            } else {
+                writeJSONError(w, fmt.Sprintf("Invalid ownership value. Must be '%s' or '%s'", database.OwnershipPribadi, database.OwnershipKeluarga), http.StatusBadRequest)
+                return
+            }
+        } else {
+            newVehicleDB.Ownership = sql.NullString{Valid: false}
+        }
 
-		tx, err := s.db.Get().BeginTx(r.Context(), nil)
-		if err != nil {
-			fmt.Printf("ERROR: Failed to start database transaction for vehicle creation: %v\n", err)
-			http.Error(w, "Failed to start database transaction", http.StatusInternalServerError)
-			return
-		}
-		var txErr error
-		var stnkImageStoragePath string
-		var kkImageStoragePath string
+        tx, err := s.db.Get().BeginTx(r.Context(), nil)
+        if err != nil {
+            fmt.Printf("ERROR: Failed to start database transaction for vehicle creation: %v\n", err)
+            writeJSONError(w, "Failed to start database transaction", http.StatusInternalServerError)
+            return
+        }
+        var txErr error
+        var stnkImageStoragePath string
+        var kkImageStoragePath string
 
-		defer func() {
-			if p := recover(); p != nil {
-				tx.Rollback()
-				if stnkImageStoragePath != "" {
-					os.Remove(stnkImageStoragePath)
-				}
-				if kkImageStoragePath != "" {
-					os.Remove(kkImageStoragePath)
-				}
-				panic(p)
-			} else if txErr != nil {
-				tx.Rollback()
-				if stnkImageStoragePath != "" {
-					os.Remove(stnkImageStoragePath)
-				}
-				if kkImageStoragePath != "" {
-					os.Remove(kkImageStoragePath)
-				}
-			}
-		}()
+        defer func() {
+            if p := recover(); p != nil {
+                tx.Rollback()
+                if stnkImageStoragePath != "" { os.Remove(stnkImageStoragePath) }
+                if kkImageStoragePath != "" { os.Remove(kkImageStoragePath) }
+                panic(p)
+            } else if txErr != nil {
+                tx.Rollback()
+                if stnkImageStoragePath != "" { os.Remove(stnkImageStoragePath) }
+                if kkImageStoragePath != "" { os.Remove(kkImageStoragePath) }
+            }
+        }()
 
-		// Proses upload gambar STNK (opsional)
-		stnkFile, stnkHandler, errSTNK := r.FormFile("stnk_image")
-		if errSTNK == nil {
-			defer stnkFile.Close()
-			stnkImageID, tempPath, errUpload := s.uploadAndCreateImageRecord(r.Context(), tx, stnkFile, stnkHandler, "stnk_image", maxFileSizeVehicle)
-			if errUpload != nil {
-				txErr = fmt.Errorf("failed to process stnk_image: %w", errUpload)
-				// Gunakan determineImageUploadErrorStatusCode jika ada, atau default ke Bad Request
-				http.Error(w, txErr.Error(), determineImageUploadErrorStatusCode(errUpload))
-				return
-			}
-			newVehicle.STNKImageID = stnkImageID
-			stnkImageStoragePath = tempPath
-		} else if errSTNK != http.ErrMissingFile {
-			txErr = fmt.Errorf("error retrieving stnk_image: %w", errSTNK)
-			http.Error(w, txErr.Error(), http.StatusBadRequest)
-			return
-		}
+        stnkFile, stnkHandler, errSTNK := r.FormFile("stnk_image")
+        if errSTNK == nil {
+            defer stnkFile.Close()
+            stnkImageID, tempPath, errUpload := s.uploadAndCreateImageRecord(r.Context(), tx, stnkFile, stnkHandler, "stnk_image", maxFileSizeVehicle)
+            if errUpload != nil {
+                txErr = fmt.Errorf("failed to process stnk_image: %w", errUpload)
+                writeJSONError(w, txErr.Error(), determineImageUploadErrorStatusCode(errUpload))
+                return
+            }
+            newVehicleDB.STNKImageID = stnkImageID
+            stnkImageStoragePath = tempPath
+        } else if errSTNK != http.ErrMissingFile {
+            txErr = fmt.Errorf("error retrieving stnk_image: %w", errSTNK)
+            writeJSONError(w, txErr.Error(), http.StatusBadRequest)
+            return
+        }
 
-		// Proses upload gambar KK (opsional)
-		kkFile, kkHandler, errKK := r.FormFile("kk_image")
-		if errKK == nil {
-			defer kkFile.Close()
-			kkImageID, tempPath, errUpload := s.uploadAndCreateImageRecord(r.Context(), tx, kkFile, kkHandler, "kk_image", maxFileSizeVehicle)
-			if errUpload != nil {
-				txErr = fmt.Errorf("failed to process kk_image: %w", errUpload)
-				http.Error(w, txErr.Error(), determineImageUploadErrorStatusCode(errUpload))
-				return
-			}
-			newVehicle.KKImageID = kkImageID
-			kkImageStoragePath = tempPath
-		} else if errKK != http.ErrMissingFile {
-			txErr = fmt.Errorf("error retrieving kk_image: %w", errKK)
-			http.Error(w, txErr.Error(), http.StatusBadRequest)
-			return
-		}
+        kkFile, kkHandler, errKK := r.FormFile("kk_image")
+        if errKK == nil {
+            defer kkFile.Close()
+            kkImageID, tempPath, errUpload := s.uploadAndCreateImageRecord(r.Context(), tx, kkFile, kkHandler, "kk_image", maxFileSizeVehicle)
+            if errUpload != nil {
+                txErr = fmt.Errorf("failed to process kk_image: %w", errUpload)
+                writeJSONError(w, txErr.Error(), determineImageUploadErrorStatusCode(errUpload))
+                return
+            }
+            newVehicleDB.KKImageID = kkImageID
+            kkImageStoragePath = tempPath
+        } else if errKK != http.ErrMissingFile {
+            txErr = fmt.Errorf("error retrieving kk_image: %w", errKK)
+            writeJSONError(w, txErr.Error(), http.StatusBadRequest)
+            return
+        }
 
-		txErr = database.CreateVehicleTx(r.Context(), tx, &newVehicle)
-		if txErr != nil {
-			fmt.Printf("ERROR: Failed to create vehicle record in transaction: %v\n", txErr)
-			http.Error(w, "Failed to create vehicle record: "+txErr.Error(), http.StatusInternalServerError)
-			return
-		}
+        txErr = database.CreateVehicleTx(r.Context(), tx, &newVehicleDB)
+        if txErr != nil {
+            fmt.Printf("ERROR: Failed to create vehicle record in transaction: %v\n", txErr)
+            writeJSONError(w, "Failed to create vehicle record: "+txErr.Error(), http.StatusInternalServerError)
+            return
+        }
 
-		txErr = tx.Commit()
-		if txErr != nil {
-			fmt.Printf("ERROR: Failed to commit database transaction for vehicle creation: %v\n", txErr)
-			http.Error(w, "Failed to commit database transaction", http.StatusInternalServerError)
-			return
-		}
+        txErr = tx.Commit()
+        if txErr != nil {
+            fmt.Printf("ERROR: Failed to commit database transaction for vehicle creation: %v\n", txErr)
+            writeJSONError(w, "Failed to commit database transaction", http.StatusInternalServerError)
+            return
+        }
+        createdVehicle, errGet := database.GetVehicleByID(r.Context(), s.db.Get(), newVehicleDB.VehicleID)
+        if errGet != nil {
+            fmt.Printf("WARN: Vehicle created (ID: %d), but failed to retrieve for full response: %v\n", newVehicleDB.VehicleID, errGet)
+            response := s.toVehicleResponse(r.Context(), s.db.Get(), &newVehicleDB)
+            w.Header().Set("Content-Type", "application/json")
+            w.WriteHeader(http.StatusCreated)
+            json.NewEncoder(w).Encode(response)
+            return
+        }
 
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusCreated)
-		json.NewEncoder(w).Encode(newVehicle)
-	}
+        response := s.toVehicleResponse(r.Context(), s.db.Get(), createdVehicle)
+        w.Header().Set("Content-Type", "application/json")
+        w.WriteHeader(http.StatusCreated)
+        json.NewEncoder(w).Encode(response)
+    }
 }
 
-// uploadAndCreateImageRecord menangani validasi, penyimpanan file, dan pembuatan record di tabel 'images'.
-// Fungsi ini sekarang lebih lengkap dan konsisten dengan implementasi di handler lain.
 func (s *Server) uploadAndCreateImageRecord(ctx context.Context, tx *sql.Tx, file multipart.File, handler *multipart.FileHeader, formFieldName string, maxFileSize int64) (sql.NullInt64, string, error) {
-	if handler.Size == 0 {
-		return sql.NullInt64{}, "", fmt.Errorf("file for %s is empty", formFieldName)
-	}
-	if handler.Size > maxFileSize {
-		return sql.NullInt64{}, "", fmt.Errorf("%s file size (%d bytes) exceeds %dMB limit", formFieldName, handler.Size, maxFileSize/(1024*1024))
-	}
+    if handler.Size == 0 {
+        return sql.NullInt64{}, "", fmt.Errorf("file for %s is empty", formFieldName)
+    }
+    if handler.Size > maxFileSize {
+        return sql.NullInt64{}, "", fmt.Errorf("%s file size (%d bytes) exceeds %dMB limit", formFieldName, handler.Size, maxFileSize/(1024*1024))
+    }
 
-	// Panggil fungsi validasi MIME terpusat
-	// Asumsi ValidateMimeType dan DefaultAllowedMimeTypes ada di package server (misalnya, dari image.go)
-	validatedMimeType, errMime := ValidateMimeType(file, handler, DefaultAllowedMimeTypes)
-	if errMime != nil {
-		return sql.NullInt64{}, "", fmt.Errorf("MIME type validation failed for %s: %w", formFieldName, errMime)
-	}
+    validatedMimeType, errMime := ValidateMimeType(file, handler, DefaultAllowedMimeTypes)
+    if errMime != nil {
+        return sql.NullInt64{}, "", fmt.Errorf("MIME type validation failed for %s: %w", formFieldName, errMime)
+    }
 
-	originalFilename := handler.Filename
-	fileExtension := filepath.Ext(originalFilename)
-	uniqueFilename := fmt.Sprintf("%s%s", uuid.New().String(), fileExtension)
+    originalFilename := handler.Filename
+    fileExtension := filepath.Ext(originalFilename)
+    uniqueFilename := fmt.Sprintf("%s%s", uuid.New().String(), fileExtension)
 
-	// imageUploadPath diasumsikan sebagai konstanta yang dapat diakses dari package server
-	storageDir := imageUploadPath
-	storagePath := filepath.Join(storageDir, uniqueFilename)
+    storageDir := imageUploadPath
+    storagePath := filepath.Join(storageDir, uniqueFilename)
 
-	if err := os.MkdirAll(storageDir, os.ModePerm); err != nil {
-		return sql.NullInt64{}, "", fmt.Errorf("failed to create upload directory '%s' for %s: %w", storageDir, formFieldName, err)
-	}
+    if err := os.MkdirAll(storageDir, os.ModePerm); err != nil {
+        return sql.NullInt64{}, "", fmt.Errorf("failed to create upload directory '%s' for %s: %w", storageDir, formFieldName, err)
+    }
 
-	dst, err := os.Create(storagePath)
-	if err != nil {
-		return sql.NullInt64{}, storagePath, fmt.Errorf("failed to create destination file '%s' for %s: %w", storagePath, formFieldName, err)
-	}
-	defer dst.Close()
+    dst, err := os.Create(storagePath)
+    if err != nil {
+        return sql.NullInt64{}, storagePath, fmt.Errorf("failed to create destination file '%s' for %s: %w", storagePath, formFieldName, err)
+    }
+    defer dst.Close()
 
-	// Pastikan file pointer ada di awal sebelum io.Copy
-	if _, errSeek := file.Seek(0, io.SeekStart); errSeek != nil {
-		os.Remove(storagePath)
-		return sql.NullInt64{}, storagePath, fmt.Errorf("failed to reset file pointer before copy for %s: %w", formFieldName, errSeek)
-	}
+    if _, errSeek := file.Seek(0, io.SeekStart); errSeek != nil {
+        os.Remove(storagePath)
+        return sql.NullInt64{}, storagePath, fmt.Errorf("failed to reset file pointer before copy for %s: %w", formFieldName, errSeek)
+    }
 
-	bytesCopied, err := io.Copy(dst, file)
-	if err != nil {
-		os.Remove(storagePath)
-		return sql.NullInt64{}, storagePath, fmt.Errorf("failed to copy %s file content to '%s': %w", formFieldName,storagePath,err)
-	}
+    bytesCopied, err := io.Copy(dst, file)
+    if err != nil {
+        os.Remove(storagePath)
+        return sql.NullInt64{}, storagePath, fmt.Errorf("failed to copy %s file content to '%s': %w", formFieldName, storagePath, err)
+    }
 
-	imgRecord := database.Image{
-		StoragePath:      filepath.ToSlash(storagePath),
-		FilenameOriginal: originalFilename,
-		MimeType:         validatedMimeType,
-		SizeBytes:        bytesCopied,
-	}
-	if err := database.CreateImageTx(ctx, tx, &imgRecord); err != nil {
-		os.Remove(storagePath)
-		return sql.NullInt64{}, storagePath, fmt.Errorf("failed to save %s image metadata to DB: %w", formFieldName, err)
-	}
+    imgRecord := database.Image{
+        StoragePath:      filepath.ToSlash(storagePath),
+        FilenameOriginal: originalFilename,
+        MimeType:         validatedMimeType,
+        SizeBytes:        bytesCopied,
+    }
+    if err := database.CreateImageTx(ctx, tx, &imgRecord); err != nil {
+        os.Remove(storagePath)
+        return sql.NullInt64{}, storagePath, fmt.Errorf("failed to save %s image metadata to DB: %w", formFieldName, err)
+    }
 
-	return sql.NullInt64{Int64: imgRecord.ImageID, Valid: true}, storagePath, nil
+    return sql.NullInt64{Int64: imgRecord.ImageID, Valid: true}, storagePath, nil
 }
 
 func (s *Server) handleGetVehicle() http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		vars := mux.Vars(r)
-		idStr, idExists := vars["id"]
+    return func(w http.ResponseWriter, r *http.Request) {
+        vars := mux.Vars(r)
+        idStr, idExists := vars["id"]
+        db := s.db.Get()
 
-		if idExists && idStr != "" {
-			id, err := strconv.ParseInt(idStr, 10, 64)
-			if err != nil {
-				http.Error(w, "invalid vehicle_id format", http.StatusBadRequest)
-				return
-			}
-			v, err := database.GetVehicleByID(r.Context(), s.db.Get(), id)
-			if err != nil {
-				if errors.Is(err, sql.ErrNoRows) || err.Error() == "vehicle not found" { // Menggunakan errors.Is lebih baik
-					http.Error(w, "Vehicle not found", http.StatusNotFound)
-				} else {
-					fmt.Printf("ERROR: Failed to get vehicle by ID %d: %v\n", id, err)
-					http.Error(w, "Failed to retrieve vehicle", http.StatusInternalServerError)
-				}
-				return
-			}
-			json.NewEncoder(w).Encode(v)
-			return
-		}
+        if idExists && idStr != "" {
+            id, err := strconv.ParseInt(idStr, 10, 64)
+            if err != nil {
+                writeJSONError(w, "invalid vehicle_id format", http.StatusBadRequest)
+                return
+            }
+            v, err := database.GetVehicleByID(r.Context(), db, id)
+            if err != nil {
+                if errors.Is(err, sql.ErrNoRows) || err.Error() == "vehicle not found" {
+                    writeJSONError(w, "Vehicle not found", http.StatusNotFound)
+                } else {
+                    fmt.Printf("ERROR: Failed to get vehicle by ID %d: %v\n", id, err)
+                    writeJSONError(w, "Failed to retrieve vehicle", http.StatusInternalServerError)
+                }
+                return
+            }
+            response := s.toVehicleResponse(r.Context(), db, v)
+            w.Header().Set("Content-Type", "application/json")
+            json.NewEncoder(w).Encode(response)
+            return
+        }
 
-		vehicles, err := database.ListVehicles(r.Context(), s.db.Get())
-		if err != nil {
-			fmt.Printf("ERROR: Failed to list vehicles: %v\n", err)
-			http.Error(w, "Failed to retrieve vehicles", http.StatusInternalServerError)
-			return
-		}
-		json.NewEncoder(w).Encode(vehicles)
-	}
+        vehiclesDB, err := database.ListVehicles(r.Context(), db)
+        if err != nil {
+            fmt.Printf("ERROR: Failed to list vehicles: %v\n", err)
+            writeJSONError(w, "Failed to retrieve vehicles", http.StatusInternalServerError)
+            return
+        }
+        responseList := make([]VehicleResponse, 0, len(vehiclesDB))
+        for i := range vehiclesDB {
+            responseList = append(responseList, s.toVehicleResponse(r.Context(), db, &vehiclesDB[i]))
+        }
+        w.Header().Set("Content-Type", "application/json")
+        json.NewEncoder(w).Encode(responseList)
+    }
 }
 
 func (s *Server) handleGetVehicleByPlate() http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		plate := mux.Vars(r)["plate_number"]
-		if plate == "" {
-			http.Error(w, "plate_number is required in path", http.StatusBadRequest)
-			return
-		}
-		v, err := database.GetVehicleByPlate(r.Context(), s.db.Get(), plate)
-		if err != nil {
-			if errors.Is(err, sql.ErrNoRows) || err.Error() == "vehicle not found" {
-				http.Error(w, "Vehicle not found for plate: "+plate, http.StatusNotFound)
-			} else {
-				fmt.Printf("ERROR: Failed to get vehicle by plate %s: %v\n", plate, err)
-				http.Error(w, "Failed to retrieve vehicle by plate", http.StatusInternalServerError)
-			}
-			return
-		}
-		json.NewEncoder(w).Encode(v)
-	}
+    return func(w http.ResponseWriter, r *http.Request) {
+        plate := mux.Vars(r)["plate_number"]
+        if plate == "" {
+            writeJSONError(w, "plate_number is required in path", http.StatusBadRequest)
+            return
+        }
+        db := s.db.Get()
+        v, err := database.GetVehicleByPlate(r.Context(), db, plate)
+        if err != nil {
+            if errors.Is(err, sql.ErrNoRows) || err.Error() == "vehicle not found" {
+                writeJSONError(w, "Vehicle not found for plate: "+plate, http.StatusNotFound)
+            } else {
+                fmt.Printf("ERROR: Failed to get vehicle by plate %s: %v\n", plate, err)
+                writeJSONError(w, "Failed to retrieve vehicle by plate", http.StatusInternalServerError)
+            }
+            return
+        }
+        response := s.toVehicleResponse(r.Context(), db, v)
+        w.Header().Set("Content-Type", "application/json")
+        json.NewEncoder(w).Encode(response)
+    }
+}
+
+func (s *Server) handleGetUserVehicles() http.HandlerFunc {
+    return func(w http.ResponseWriter, r *http.Request) {
+        userIDFromCtx, ok := r.Context().Value(middleware.UserIDContextKey).(string)
+        if !ok || userIDFromCtx == "" {
+            writeJSONError(w, "Unauthorized: User ID not found in context.", http.StatusUnauthorized)
+            return
+        }
+
+        db := s.db.Get() // Menggunakan *sql.DB karena ListVehiclesByUserID menerima Querier
+        vehiclesDB, err := database.ListVehiclesByUserID(r.Context(), db, userIDFromCtx)
+        if err != nil {
+            fmt.Printf("ERROR: Failed to list vehicles for user %s: %v\n", userIDFromCtx, err)
+            writeJSONError(w, "Failed to retrieve user's vehicles", http.StatusInternalServerError)
+            return
+        }
+
+        // Jika vehiclesDB kosong, responseList akan menjadi slice kosong,
+        // dan JSON response akan menjadi array kosong `[]`, yang sudah benar.
+        responseList := make([]VehicleResponse, 0, len(vehiclesDB))
+        for i := range vehiclesDB {
+            responseList = append(responseList, s.toVehicleResponse(r.Context(), db, &vehiclesDB[i]))
+        }
+
+        w.Header().Set("Content-Type", "application/json")
+        json.NewEncoder(w).Encode(responseList)
+    }
 }
 
 func (s *Server) handleUpdateVehicle() http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		vars := mux.Vars(r)
-		idStr := vars["id"]
-		id, err := strconv.ParseInt(idStr, 10, 64)
-		if err != nil {
-			http.Error(w, "invalid vehicle_id format", http.StatusBadRequest)
-			return
-		}
+    return func(w http.ResponseWriter, r *http.Request) {
+        vars := mux.Vars(r)
+        idStr := vars["id"]
+        id, err := strconv.ParseInt(idStr, 10, 64)
+        if err != nil {
+            writeJSONError(w, "invalid vehicle_id format", http.StatusBadRequest)
+            return
+        }
 
-		// Untuk update dengan gambar, kita akan menggunakan multipart/form-data
-		maxTotalSize := extraFormDataSizeVehicle + 2*maxFileSizeVehicle // Sama seperti create
-		if err := r.ParseMultipartForm(int64(maxTotalSize)); err != nil {
-			http.Error(w, "Request too large or invalid multipart form: "+err.Error(), http.StatusBadRequest)
-			return
-		}
+        maxTotalSize := extraFormDataSizeVehicle + 2*maxFileSizeVehicle
+        if err := r.ParseMultipartForm(int64(maxTotalSize)); err != nil {
+            writeJSONError(w, "Request too large or invalid multipart form: "+err.Error(), http.StatusBadRequest)
+            return
+        }
 
-		// Ambil vehicle yang ada untuk perbandingan dan untuk mendapatkan UserID yang benar
-		existingVehicle, err := database.GetVehicleByID(r.Context(), s.db.Get(), id)
-		if err != nil {
-			if errors.Is(err, sql.ErrNoRows) || err.Error() == "vehicle not found" {
-				http.Error(w, "Vehicle not found", http.StatusNotFound)
-			} else {
-				http.Error(w, "Failed to retrieve existing vehicle", http.StatusInternalServerError)
-			}
-			return
-		}
+        db := s.db.Get()
+        existingVehicle, err := database.GetVehicleByID(r.Context(), db, id)
+        if err != nil {
+            if errors.Is(err, sql.ErrNoRows) || err.Error() == "vehicle not found" {
+                writeJSONError(w, "Vehicle not found", http.StatusNotFound)
+            } else {
+                writeJSONError(w, "Failed to retrieve existing vehicle", http.StatusInternalServerError)
+            }
+            return
+        }
 
-		// Pastikan user yang melakukan update adalah pemilik vehicle atau admin
-		requestingUserID, _ := r.Context().Value(middleware.UserIDContextKey).(string)
-		isAdmin, _ := r.Context().Value(middleware.AdminStatusContextKey).(bool)
-		if !isAdmin && existingVehicle.UserID != requestingUserID {
-			http.Error(w, "Forbidden: You can only update your own vehicles.", http.StatusForbidden)
-			return
-		}
+        requestingUserID, _ := r.Context().Value(middleware.UserIDContextKey).(string)
+        isAdmin, _ := r.Context().Value(middleware.AdminStatusContextKey).(bool)
+        if !isAdmin && existingVehicle.UserID != requestingUserID {
+            writeJSONError(w, "Forbidden: You can only update your own vehicles.", http.StatusForbidden)
+            return
+        }
 
-		vehicleToUpdate := *existingVehicle // Salin data yang ada
-		changed := false
+        vehicleToUpdate := *existingVehicle
+        changed := false
 
-		// Update field teks jika ada di form
-		if val := r.FormValue("vehicle_name"); val != "" {
-			vehicleToUpdate.VehicleName = val
-			changed = true
-		}
-		if val := r.FormValue("color"); val != "" {
-			vehicleToUpdate.Color = val
-			changed = true
-		}
-		if val := r.FormValue("plate_number"); val != "" {
-			vehicleToUpdate.PlateNumber = val
-			changed = true
-		}
-		if ownershipStr := r.FormValue("ownership"); ownershipStr != "" {
-			if ownershipStr == string(database.OwnershipPribadi) || ownershipStr == string(database.OwnershipKeluarga) {
-				vehicleToUpdate.Ownership = database.OwnershipType(ownershipStr)
-				changed = true
-			} else {
-				http.Error(w, fmt.Sprintf("Invalid ownership value. Must be '%s' or '%s'", database.OwnershipPribadi, database.OwnershipKeluarga), http.StatusBadRequest)
-				return
-			}
-		}
+        if val := r.FormValue("vehicle_name"); val != "" && val != vehicleToUpdate.VehicleName {
+            vehicleToUpdate.VehicleName = val
+            changed = true
+        }
+        if val := r.FormValue("color"); val != "" && val != vehicleToUpdate.Color {
+            vehicleToUpdate.Color = val
+            changed = true
+        }
+        if val := r.FormValue("plate_number"); val != "" && val != vehicleToUpdate.PlateNumber {
+            vehicleToUpdate.PlateNumber = val
+            changed = true
+        }
+        if ownershipStr := r.FormValue("ownership"); ownershipStr != "" {
+            currentOwnership := ""
+            if vehicleToUpdate.Ownership.Valid {
+                currentOwnership = vehicleToUpdate.Ownership.String
+            }
+            if ownershipStr != currentOwnership {
+                if ownershipStr == string(database.OwnershipPribadi) || ownershipStr == string(database.OwnershipKeluarga) {
+                    vehicleToUpdate.Ownership = sql.NullString{String: ownershipStr, Valid: true}
+                    changed = true
+                } else {
+                    writeJSONError(w, fmt.Sprintf("Invalid ownership value. Must be '%s' or '%s'", database.OwnershipPribadi, database.OwnershipKeluarga), http.StatusBadRequest)
+                    return
+                }
+            }
+        }
 
-		tx, err := s.db.Get().BeginTx(r.Context(), nil)
-		if err != nil {
-			http.Error(w, "Failed to start database transaction", http.StatusInternalServerError)
-			return
-		}
-		var txErr error
-		var newStnkImageStoragePath, newKkImageStoragePath string
-		// TODO: Simpan path gambar lama untuk dihapus jika gambar baru diupload dan transaksi berhasil.
+        tx, err := db.BeginTx(r.Context(), nil)
+        if err != nil {
+            writeJSONError(w, "Failed to start database transaction", http.StatusInternalServerError)
+            return
+        }
+        var txErr error
+        var newStnkImageStoragePath, newKkImageStoragePath string
+        oldStnkImageID := existingVehicle.STNKImageID
+        oldKkImageID := existingVehicle.KKImageID
 
-		defer func() {
-			if p := recover(); p != nil {
-				tx.Rollback()
-				if newStnkImageStoragePath != "" { os.Remove(newStnkImageStoragePath) }
-				if newKkImageStoragePath != "" { os.Remove(newKkImageStoragePath) }
-				panic(p)
-			} else if txErr != nil {
-				tx.Rollback()
-				if newStnkImageStoragePath != "" { os.Remove(newStnkImageStoragePath) }
-				if newKkImageStoragePath != "" { os.Remove(newKkImageStoragePath) }
-			}
-		}()
+        defer func() {
+            if p := recover(); p != nil {
+                tx.Rollback()
+                if newStnkImageStoragePath != "" { os.Remove(newStnkImageStoragePath) }
+                if newKkImageStoragePath != "" { os.Remove(newKkImageStoragePath) }
+                panic(p)
+            } else if txErr != nil {
+                tx.Rollback()
+                if newStnkImageStoragePath != "" { os.Remove(newStnkImageStoragePath) }
+                if newKkImageStoragePath != "" { os.Remove(newKkImageStoragePath) }
+            }
+        }()
 
-		// Proses STNK Image jika ada file baru
-		stnkFile, stnkHandler, errSTNK := r.FormFile("stnk_image")
-		if errSTNK == nil {
-			defer stnkFile.Close()
-			// TODO: Hapus file STNK lama dan record image lama jika ada
-			stnkImageID, tempPath, errUpload := s.uploadAndCreateImageRecord(r.Context(), tx, stnkFile, stnkHandler, "stnk_image", maxFileSizeVehicle)
-			if errUpload != nil {
-				txErr = fmt.Errorf("failed to process new stnk_image: %w", errUpload)
-				http.Error(w, txErr.Error(), determineImageUploadErrorStatusCode(errUpload))
-				return
-			}
-			vehicleToUpdate.STNKImageID = stnkImageID
-			newStnkImageStoragePath = tempPath
-			changed = true
-		} else if errSTNK != http.ErrMissingFile {
-			txErr = fmt.Errorf("error retrieving stnk_image for update: %w", errSTNK)
-			http.Error(w, txErr.Error(), http.StatusBadRequest)
-			return
-		}
+        stnkFile, stnkHandler, errSTNK := r.FormFile("stnk_image")
+        if errSTNK == nil {
+            defer stnkFile.Close()
+            stnkImageID, tempPath, errUpload := s.uploadAndCreateImageRecord(r.Context(), tx, stnkFile, stnkHandler, "stnk_image", maxFileSizeVehicle)
+            if errUpload != nil {
+                txErr = fmt.Errorf("failed to process new stnk_image: %w", errUpload)
+                writeJSONError(w, txErr.Error(), determineImageUploadErrorStatusCode(errUpload))
+                return
+            }
+            vehicleToUpdate.STNKImageID = stnkImageID
+            newStnkImageStoragePath = tempPath
+            changed = true
+        } else if errSTNK != http.ErrMissingFile {
+            txErr = fmt.Errorf("error retrieving stnk_image for update: %w", errSTNK)
+            writeJSONError(w, txErr.Error(), http.StatusBadRequest)
+            return
+        }
 
-		// Proses KK Image jika ada file baru
-		kkFile, kkHandler, errKK := r.FormFile("kk_image")
-		if errKK == nil {
-			defer kkFile.Close()
-			// TODO: Hapus file KK lama dan record image lama jika ada
-			kkImageID, tempPath, errUpload := s.uploadAndCreateImageRecord(r.Context(), tx, kkFile, kkHandler, "kk_image", maxFileSizeVehicle)
-			if errUpload != nil {
-				txErr = fmt.Errorf("failed to process new kk_image: %w", errUpload)
-				http.Error(w, txErr.Error(), determineImageUploadErrorStatusCode(errUpload))
-				return
-			}
-			vehicleToUpdate.KKImageID = kkImageID
-			newKkImageStoragePath = tempPath
-			changed = true
-		} else if errKK != http.ErrMissingFile {
-			txErr = fmt.Errorf("error retrieving kk_image for update: %w", errKK)
-			http.Error(w, txErr.Error(), http.StatusBadRequest)
-			return
-		}
+        kkFile, kkHandler, errKK := r.FormFile("kk_image")
+        if errKK == nil {
+            defer kkFile.Close()
+            kkImageID, tempPath, errUpload := s.uploadAndCreateImageRecord(r.Context(), tx, kkFile, kkHandler, "kk_image", maxFileSizeVehicle)
+            if errUpload != nil {
+                txErr = fmt.Errorf("failed to process new kk_image: %w", errUpload)
+                writeJSONError(w, txErr.Error(), determineImageUploadErrorStatusCode(errUpload))
+                return
+            }
+            vehicleToUpdate.KKImageID = kkImageID
+            newKkImageStoragePath = tempPath
+            changed = true
+        } else if errKK != http.ErrMissingFile {
+            txErr = fmt.Errorf("error retrieving kk_image for update: %w", errKK)
+            writeJSONError(w, txErr.Error(), http.StatusBadRequest)
+            return
+        }
 
-		if !changed {
-			http.Error(w, "No changes provided for update", http.StatusBadRequest)
-			return // Tidak perlu rollback karena tidak ada operasi DB
-		}
+        if !changed && newStnkImageStoragePath == "" && newKkImageStoragePath == "" {
+            writeJSONError(w, "No changes provided for update", http.StatusBadRequest)
+            // Tidak perlu rollback karena transaksi belum melakukan apa-apa
+            return
+        }
 
-		txErr = database.UpdateVehicleTx(r.Context(), tx, id, &vehicleToUpdate) // Asumsi UpdateVehicle menerima *sql.Tx
-		if txErr != nil {
-			if errors.Is(txErr, sql.ErrNoRows) || strings.Contains(txErr.Error(), "no vehicle record updated") {
-				http.Error(w, "Vehicle not found or no effective changes made", http.StatusNotFound)
-			} else {
-				http.Error(w, "Failed to update vehicle: "+txErr.Error(), http.StatusInternalServerError)
-			}
-			return
-		}
+        txErr = database.UpdateVehicleTx(r.Context(), tx, id, &vehicleToUpdate)
+        if txErr != nil {
+            if errors.Is(txErr, sql.ErrNoRows) || strings.Contains(txErr.Error(), "no vehicle record updated") || strings.Contains(txErr.Error(), "no fields provided for vehicle update") {
+                writeJSONError(w, "Vehicle not found or no effective changes made", http.StatusNotFound)
+            } else {
+                writeJSONError(w, "Failed to update vehicle: "+txErr.Error(), http.StatusInternalServerError)
+            }
+            return
+        }
 
-		txErr = tx.Commit()
-		if txErr != nil {
-			http.Error(w, "Failed to commit database transaction", http.StatusInternalServerError)
-			return
-		}
+        if vehicleToUpdate.STNKImageID.Valid && oldStnkImageID.Valid && vehicleToUpdate.STNKImageID.Int64 != oldStnkImageID.Int64 {
+            if errDel := s.deleteImageRecordAndFile(r.Context(), tx, oldStnkImageID.Int64); errDel != nil {
+                fmt.Printf("WARN: Failed to delete old STNK image (ID: %d) after update: %v\n", oldStnkImageID.Int64, errDel)
+            }
+        }
+        if vehicleToUpdate.KKImageID.Valid && oldKkImageID.Valid && vehicleToUpdate.KKImageID.Int64 != oldKkImageID.Int64 {
+            if errDel := s.deleteImageRecordAndFile(r.Context(), tx, oldKkImageID.Int64); errDel != nil {
+                fmt.Printf("WARN: Failed to delete old KK image (ID: %d) after update: %v\n", oldKkImageID.Int64, errDel)
+            }
+        }
 
-		// TODO: Jika gambar lama diganti, hapus file fisik dan record image lama di sini setelah commit berhasil.
+        txErr = tx.Commit()
+        if txErr != nil {
+            writeJSONError(w, "Failed to commit database transaction", http.StatusInternalServerError)
+            return
+        }
 
-		updatedVehicle, err := database.GetVehicleByID(r.Context(), s.db.Get(), id)
-		if err != nil {
-			w.WriteHeader(http.StatusOK)
-			json.NewEncoder(w).Encode(map[string]string{"message": "Vehicle updated successfully, but failed to retrieve updated data."})
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(updatedVehicle)
-	}
+        updatedVehicleDB, errGet := database.GetVehicleByID(r.Context(), db, id)
+        if errGet != nil {
+            writeJSONError(w, "Vehicle updated successfully, but failed to retrieve updated data with image URLs.", http.StatusInternalServerError)
+            return
+        }
+        response := s.toVehicleResponse(r.Context(), db, updatedVehicleDB)
+        w.Header().Set("Content-Type", "application/json")
+        w.WriteHeader(http.StatusOK)
+        json.NewEncoder(w).Encode(response)
+    }
 }
 
 func (s *Server) handleDeleteVehicle() http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		vars := mux.Vars(r)
-		idStr := vars["id"]
-		id, err := strconv.ParseInt(idStr, 10, 64)
-		if err != nil {
-			http.Error(w, "invalid vehicle_id format", http.StatusBadRequest)
-			return
-		}
+    return func(w http.ResponseWriter, r *http.Request) {
+        vars := mux.Vars(r)
+        idStr := vars["id"]
+        id, err := strconv.ParseInt(idStr, 10, 64)
+        if err != nil {
+            writeJSONError(w, "invalid vehicle_id format", http.StatusBadRequest)
+            return
+        }
 
-		// Ambil vehicle yang akan dihapus untuk mendapatkan ID gambar
-		vehicleToDelete, err := database.GetVehicleByID(r.Context(), s.db.Get(), id)
-		if err != nil {
-			if errors.Is(err, sql.ErrNoRows) || err.Error() == "vehicle not found" {
-				http.Error(w, "Vehicle not found", http.StatusNotFound)
-			} else {
-				http.Error(w, "Failed to retrieve vehicle before deletion", http.StatusInternalServerError)
-			}
-			return
-		}
+        db := s.db.Get()
+        vehicleToDelete, err := database.GetVehicleByID(r.Context(), db, id)
+        if err != nil {
+            if errors.Is(err, sql.ErrNoRows) || err.Error() == "vehicle not found" {
+                writeJSONError(w, "Vehicle not found", http.StatusNotFound)
+            } else {
+                writeJSONError(w, "Failed to retrieve vehicle before deletion", http.StatusInternalServerError)
+            }
+            return
+        }
 
-		// Pastikan user yang melakukan delete adalah pemilik vehicle atau admin
-		requestingUserID, _ := r.Context().Value(middleware.UserIDContextKey).(string)
-		isAdmin, _ := r.Context().Value(middleware.AdminStatusContextKey).(bool)
-		if !isAdmin && vehicleToDelete.UserID != requestingUserID {
-			http.Error(w, "Forbidden: You can only delete your own vehicles.", http.StatusForbidden)
-			return
-		}
+        requestingUserID, _ := r.Context().Value(middleware.UserIDContextKey).(string)
+        isAdmin, _ := r.Context().Value(middleware.AdminStatusContextKey).(bool)
+        if !isAdmin && vehicleToDelete.UserID != requestingUserID {
+            writeJSONError(w, "Forbidden: You can only delete your own vehicles.", http.StatusForbidden)
+            return
+        }
 
-		tx, err := s.db.Get().BeginTx(r.Context(), nil)
-		if err != nil {
-			http.Error(w, "Failed to start database transaction", http.StatusInternalServerError)
-			return
-		}
-		var txErr error
-		defer func() {
-			if p := recover(); p != nil {
-				tx.Rollback()
-				panic(p)
-			} else if txErr != nil {
-				tx.Rollback()
-			}
-		}()
+        tx, err := db.BeginTx(r.Context(), nil)
+        if err != nil {
+            writeJSONError(w, "Failed to start database transaction", http.StatusInternalServerError)
+            return
+        }
+        var txErr error
+        defer func() {
+            if p := recover(); p != nil {
+                tx.Rollback()
+                panic(p)
+            } else if txErr != nil {
+                tx.Rollback()
+            }
+        }()
 
-		// Hapus record vehicle
-		txErr = database.DeleteVehicleTx(r.Context(), tx, id) // Asumsi ada DeleteVehicleTx
-		if txErr != nil {
-			if errors.Is(txErr, sql.ErrNoRows) || strings.Contains(txErr.Error(), "no vehicle record deleted") {
-				http.Error(w, "Vehicle not found", http.StatusNotFound)
-			} else {
-				http.Error(w, "Failed to delete vehicle: "+txErr.Error(), http.StatusInternalServerError)
-			}
-			return
-		}
+        // Hapus gambar STNK jika ada
+        if vehicleToDelete.STNKImageID.Valid {
+            txErr = s.deleteImageRecordAndFile(r.Context(), tx, vehicleToDelete.STNKImageID.Int64)
+            if txErr != nil {
+                fmt.Printf("WARN: Failed to delete STNK image (ID: %d) during vehicle deletion: %v\n", vehicleToDelete.STNKImageID.Int64, txErr)
+                // Tidak menggagalkan commit utama, hanya warning. Atau bisa juga digagalkan.
+                // writeJSONError(w, "Failed to delete associated STNK image: "+txErr.Error(), http.StatusInternalServerError)
+                // return
+                txErr = nil // Reset error agar tidak rollback transaksi utama jika hanya image delete yg gagal
+            }
+        }
 
-		// Hapus gambar STNK jika ada
-		if vehicleToDelete.STNKImageID.Valid {
-			txErr = s.deleteImageRecordAndFile(r.Context(), tx, vehicleToDelete.STNKImageID.Int64)
-			if txErr != nil {
-				// Log error tapi lanjutkan, mungkin hanya warning
-				fmt.Printf("WARN: Failed to delete STNK image (ID: %d) during vehicle deletion: %v\n", vehicleToDelete.STNKImageID.Int64, txErr)
-				txErr = nil // Reset error agar tidak rollback transaksi utama jika hanya image delete yg gagal
-			}
-		}
+        // Hapus gambar KK jika ada
+        if vehicleToDelete.KKImageID.Valid {
+            txErr = s.deleteImageRecordAndFile(r.Context(), tx, vehicleToDelete.KKImageID.Int64)
+            if txErr != nil {
+                fmt.Printf("WARN: Failed to delete KK image (ID: %d) during vehicle deletion: %v\n", vehicleToDelete.KKImageID.Int64, txErr)
+                // writeJSONError(w, "Failed to delete associated KK image: "+txErr.Error(), http.StatusInternalServerError)
+                // return
+                txErr = nil
+            }
+        }
 
-		// Hapus gambar KK jika ada
-		if vehicleToDelete.KKImageID.Valid {
-			txErr = s.deleteImageRecordAndFile(r.Context(), tx, vehicleToDelete.KKImageID.Int64)
-			if txErr != nil {
-				fmt.Printf("WARN: Failed to delete KK image (ID: %d) during vehicle deletion: %v\n", vehicleToDelete.KKImageID.Int64, txErr)
-				txErr = nil
-			}
-		}
+        // Hapus record vehicle
+        txErr = database.DeleteVehicleTx(r.Context(), tx, id)
+        if txErr != nil {
+            if errors.Is(txErr, sql.ErrNoRows) || strings.Contains(txErr.Error(), "no vehicle record deleted") {
+                writeJSONError(w, "Vehicle not found", http.StatusNotFound)
+            } else {
+                writeJSONError(w, "Failed to delete vehicle: "+txErr.Error(), http.StatusInternalServerError)
+            }
+            return
+        }
 
-		txErr = tx.Commit()
-		if txErr != nil {
-			http.Error(w, "Failed to commit database transaction", http.StatusInternalServerError)
-			return
-		}
+        txErr = tx.Commit()
+        if txErr != nil {
+            writeJSONError(w, "Failed to commit database transaction", http.StatusInternalServerError)
+            return
+        }
 
-		w.WriteHeader(http.StatusNoContent)
-	}
+        w.WriteHeader(http.StatusNoContent)
+    }
 }
 
-// deleteImageRecordAndFile adalah helper untuk menghapus record gambar dari DB dan file dari disk.
 func (s *Server) deleteImageRecordAndFile(ctx context.Context, tx *sql.Tx, imageID int64) error {
-    imagePath, err := database.GetImageStoragePath(ctx, tx, imageID) // Perlu fungsi ini di database/image.go
+    imagePath, err := database.GetImageStoragePath(ctx, tx, imageID)
     if err != nil {
         if errors.Is(err, sql.ErrNoRows) {
-            return nil // Record gambar tidak ada, anggap sudah terhapus
+            return nil
         }
         return fmt.Errorf("failed to get image path for ID %d: %w", imageID, err)
     }
 
-    err = database.DeleteImageTx(ctx, tx, imageID) // Perlu fungsi ini di database/image.go
+    err = database.DeleteImageTx(ctx, tx, imageID)
     if err != nil {
+        // Jika record DB gagal dihapus, jangan hapus file fisiknya.
         return fmt.Errorf("failed to delete image record for ID %d: %w", imageID, err)
     }
 
     if imagePath != "" {
-        // Hati-hati dengan path traversal jika imagePath bisa dikontrol user.
-        // Sebaiknya pastikan imagePath selalu relatif terhadap direktori upload yang aman.
-        // Untuk keamanan tambahan, filepath.Clean dan validasi base path bisa digunakan.
-        // fullDiskPath := filepath.Join(imageUploadPath, filepath.Base(imagePath)) // Lebih aman
-        fullDiskPath := imagePath // Jika imagePath sudah absolut atau relatif dari root yang benar
+        // Pastikan imagePath adalah path yang aman dan relatif terhadap root upload Anda.
+        // Jika imagePath adalah "uploads/images/file.jpg" dan imageUploadPath adalah "./"
+        // maka fullDiskPath harusnya imagePath itu sendiri.
+        // Jika imageUploadPath adalah "./uploads" dan imagePath adalah "images/file.jpg"
+        // maka fullDiskPath = filepath.Join(imageUploadPath, imagePath)
+        // Asumsi imagePath yang disimpan di DB sudah benar dan relatif dari root proyek atau direktori yang dilayani.
+        // Untuk keamanan, pastikan path ini tidak bisa dimanipulasi untuk menghapus file di luar direktori upload.
+        // fullDiskPath := filepath.Clean(imagePath) // Membersihkan path
+        // if !strings.HasPrefix(fullDiskPath, filepath.Clean(imageUploadPath)) {
+        // 	return fmt.Errorf("invalid image path, potential traversal: %s", imagePath)
+        // }
+        fullDiskPath := imagePath // Asumsi imagePath sudah aman dan benar
+
         if errOs := os.Remove(fullDiskPath); errOs != nil && !os.IsNotExist(errOs) {
-            // Log error penghapusan file, tapi jangan gagalkan transaksi utama jika record DB sudah terhapus.
-            // Atau, jika penghapusan file kritis, kembalikan error.
-            return fmt.Errorf("failed to delete image file %s: %w", fullDiskPath, errOs)
+            // Jika file fisik gagal dihapus setelah record DB berhasil dihapus, ini adalah masalah.
+            // Anda bisa memilih untuk mengembalikan error ini yang akan menyebabkan rollback jika ini bagian dari transaksi yang lebih besar,
+            // atau hanya log sebagai warning.
+            return fmt.Errorf("failed to delete image file %s after DB record deletion: %w", fullDiskPath, errOs)
         }
     }
     return nil
 }
 
-
 func (s *Server) RegisterVehicleRoutes(r *mux.Router) {
-	r.HandleFunc("/vehicles", s.handleCreateVehicle()).Methods("POST")
-	r.HandleFunc("/vehicles", s.handleGetVehicle()).Methods("GET")
-	r.HandleFunc("/vehicles/{id:[0-9]+}", s.handleGetVehicle()).Methods("GET")
-	r.HandleFunc("/vehicles/plate/{plate_number}", s.handleGetVehicleByPlate()).Methods("GET")
-	r.HandleFunc("/vehicles/{id:[0-9]+}", s.handleUpdateVehicle()).Methods("PUT")
-	r.HandleFunc("/vehicles/{id:[0-9]+}", s.handleDeleteVehicle()).Methods("DELETE")
+    r.HandleFunc("/vehicles", s.handleCreateVehicle()).Methods("POST")
+    r.HandleFunc("/vehicles", s.handleGetVehicle()).Methods("GET")
+		r.HandleFunc("/vehicles/my", s.handleGetUserVehicles()).Methods("GET")
+    r.HandleFunc("/vehicles/{id:[0-9]+}", s.handleGetVehicle()).Methods("GET")
+    r.HandleFunc("/vehicles/plate/{plate_number}", s.handleGetVehicleByPlate()).Methods("GET")
+    r.HandleFunc("/vehicles/{id:[0-9]+}", s.handleUpdateVehicle()).Methods("PUT")
+    r.HandleFunc("/vehicles/{id:[0-9]+}", s.handleDeleteVehicle()).Methods("DELETE")
 }
+
+
 
