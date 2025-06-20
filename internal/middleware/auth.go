@@ -44,3 +44,23 @@ func JWTMiddleware() func(http.Handler) http.Handler {
 		})
 	}
 }
+
+func AdminOnlyMiddleware() func(http.Handler) http.Handler {
+    return func(next http.Handler) http.Handler {
+        return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+            // Ambil status admin dari konteks yang sudah di-set oleh JWTMiddleware.
+            isAdmin, ok := r.Context().Value(AdminStatusContextKey).(bool)
+
+            // Jika status tidak ada (bukan boolean) atau false, tolak akses.
+            if !ok || !isAdmin {
+                // 403 Forbidden adalah status yang tepat:
+                // "Server mengerti permintaan Anda, tetapi menolak untuk mengotorisasinya."
+                http.Error(w, "Forbidden: Administrator access required", http.StatusForbidden)
+                return
+            }
+
+            // Jika user adalah admin, lanjutkan ke handler berikutnya.
+            next.ServeHTTP(w, r)
+        })
+    }
+}
