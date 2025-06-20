@@ -26,6 +26,22 @@ type LostReport struct {
 	PersonEvidenceImageID *int64    `json:"person_evidence_image_id,omitempty"` // Pointer agar bisa null
 }
 
+// LostReportWithVehicleInfo adalah struct yang menggabungkan LostReport dengan info ringkas Vehicle.
+type LostReportWithVehicleInfo struct {
+	LostID                int       `json:"lost_id"`
+	UserID                string    `json:"user_id"`
+	Timestamp             time.Time `json:"timestamp"`
+	VehicleID             int       `json:"vehicle_id"`
+	Address               string    `json:"address"`
+	Status                string    `json:"status"`
+	MotorEvidenceImageID  *int64    `json:"motor_evidence_image_id,omitempty"`
+	PersonEvidenceImageID *int64    `json:"person_evidence_image_id,omitempty"`
+
+	// Vehicle Info (dari JOIN) - Hanya field yang dibutuhkan
+	VehicleName sql.NullString `json:"vehicle_name"`
+	PlateNumber sql.NullString `json:"plate_number"`
+}
+
 func CreateLostReportTx(ctx context.Context, tx *sql.Tx, lr *LostReport) error {
 	query := `INSERT INTO lost_report (user_id, timestamp, vehicle_id, address, status, motor_evidence_image_id, person_evidence_image_id)
               VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING lost_id`
@@ -48,6 +64,32 @@ func GetLostReportByID(ctx context.Context, db *sql.DB, id int) (*LostReport, er
 			return nil, errors.New("lost_report not found")
 		}
 		return nil, fmt.Errorf("error getting lost report by ID %d: %w", id, err)
+	}
+	return &lr, nil
+}
+
+// GetLostReportWithVehicleInfoByID mengambil satu laporan kehilangan beserta info ringkas kendaraannya.
+func GetLostReportWithVehicleInfoByID(ctx context.Context, db *sql.DB, id int) (*LostReportWithVehicleInfo, error) {
+	var lr LostReportWithVehicleInfo
+	query := `
+        SELECT 
+            lr.lost_id, lr.user_id, lr.timestamp, lr.vehicle_id, lr.address, lr.status, 
+            lr.motor_evidence_image_id, lr.person_evidence_image_id,
+            v.vehicle_name, v.plate_number
+        FROM lost_report lr
+        LEFT JOIN vehicle v ON lr.vehicle_id = v.vehicle_id
+        WHERE lr.lost_id = $1`
+
+	err := db.QueryRowContext(ctx, query, id).Scan(
+		&lr.LostID, &lr.UserID, &lr.Timestamp, &lr.VehicleID, &lr.Address, &lr.Status,
+		&lr.MotorEvidenceImageID, &lr.PersonEvidenceImageID,
+		&lr.VehicleName, &lr.PlateNumber,
+	)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, errors.New("lost_report not found")
+		}
+		return nil, fmt.Errorf("error getting lost report with vehicle info by ID %d: %w", id, err)
 	}
 	return &lr, nil
 }
@@ -85,6 +127,82 @@ func ListLostReports(ctx context.Context, db *sql.DB, statusFilter string) ([]Lo
 		return nil, fmt.Errorf("error after iterating lost report rows: %w", err)
 	}
 	return list, nil
+}
+
+func ListLostReportsWithVehicleInfo(ctx context.Context, db *sql.DB, statusFilter string) ([]LostReportWithVehicleInfo, error) {
+	var queryBuilder strings.Builder
+	queryBuilder.WriteString(`
+        SELECT 
+            lr.lost_id, lr.user_id, lr.timestamp, lr.vehicle_id, lr.address, lr.status, 
+            lr.motor_evidence_image_id, lr.person_evidence_image_id,
+            v.vehicle_name, v.plate_number
+        FROM lost_report lr
+        LEFT JOIN vehicle v ON lr.vehicle_id = v.vehicle_id`)
+
+	var args []interface{}
+	if statusFilter != "" {
+		queryBuilder.WriteString(" WHERE lr.status = $1")
+		args = append(args, statusFilter)
+	}
+	queryBuilder.WriteString(" ORDER BY lr.timestamp DESC")
+
+	rows, err := db.QueryContext(ctx, queryBuilder.String(), args...)
+	if err != nil {
+		return nil, fmt.Errorf("error listing lost reports with vehicle info: %w", err)
+	}
+	defer rows.Close()
+
+	var list []LostReportWithVehicleInfo
+	for rows.Next() {
+		var lr LostReportWithVehicleInfo
+		if errScan := rows.Scan(
+			&lr.LostID, &lr.UserID, &lr.Timestamp, &lr.VehicleID, &lr.Address, &lr.Status,
+			&lr.MotorEvidenceImageID, &lr.PersonEvidenceImageID,
+			&lr.VehicleName, &lr.PlateNumber,
+		); errScan != nil {
+			return nil, fmt.Errorf("error scanning lost report with vehicle info row: %w", errScan)
+		}
+		list = append(list, lr)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, fmt.Errorf("error after iterating lost report with vehicle info rows: %w", err)
+	}
+	return list, nil
+}
+
+func ListLostReportsWithVehicleInfoByUserID(ctx context.Context, db *sql.DB, userID string) ([]LostReportWithVehicleInfo, error) {
+    query := `
+        SELECT 
+            lr.lost_id, lr.user_id, lr.timestamp, lr.vehicle_id, lr.address, lr.status, 
+            lr.motor_evidence_image_id, lr.person_evidence_image_id,
+            v.vehicle_name, v.plate_number
+        FROM lost_report lr
+        LEFT JOIN vehicle v ON lr.vehicle_id = v.vehicle_id
+        WHERE lr.user_id = $1
+        ORDER BY lr.timestamp DESC`
+
+    rows, err := db.QueryContext(ctx, query, userID)
+    if err != nil {
+        return nil, fmt.Errorf("error listing lost reports with vehicle info for user %s: %w", userID, err)
+    }
+    defer rows.Close()
+
+    var list []LostReportWithVehicleInfo
+    for rows.Next() {
+        var lr LostReportWithVehicleInfo
+        if errScan := rows.Scan(
+            &lr.LostID, &lr.UserID, &lr.Timestamp, &lr.VehicleID, &lr.Address, &lr.Status,
+            &lr.MotorEvidenceImageID, &lr.PersonEvidenceImageID,
+            &lr.VehicleName, &lr.PlateNumber,
+        ); errScan != nil {
+            return nil, fmt.Errorf("error scanning lost report with vehicle info row for user: %w", errScan)
+        }
+        list = append(list, lr)
+    }
+    if err = rows.Err(); err != nil {
+        return nil, fmt.Errorf("error after iterating lost report with vehicle info rows for user: %w", err)
+    }
+    return list, nil
 }
 
 func ListLostReportsByUserID(ctx context.Context, db *sql.DB, userID string) ([]LostReport, error) {
