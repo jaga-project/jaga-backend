@@ -57,13 +57,21 @@ func (s *Server) handleLogin() http.HandlerFunc {
 			return
 		}
 
-		tokenString, expiresAt, err := auth.GenerateJWT(user.UserID)
+		var isAdmin bool
+		// Cek status admin SEKALI di sini
+		isAdmin, err = database.IsUserAdmin(s.db.Get(), user.UserID)
+		if err != nil {
+			// Tangani error, mungkin log saja dan anggap bukan admin
+			log.Printf("Failed to check admin status for %s during login: %v", user.UserID, err)
+			isAdmin = false
+    }
+
+		tokenString, expiresAt, err := auth.GenerateJWT(user.UserID, isAdmin)
 		if err != nil {
 			http.Error(w, "Failed to generate token: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
 
-		isAdmin := false
 		_, err = database.GetAdminByUserID(r.Context(), s.db.Get(), user.UserID)
 		if err == nil { 
 			isAdmin = true

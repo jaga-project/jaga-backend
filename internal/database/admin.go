@@ -9,7 +9,7 @@ import (
 )
 
 type Admin struct {
-    UserID     string    `json:"user_id"` // uuid
+    UserID     string    `json:"user_id"`
     AdminLevel int       `json:"admin_level"`
     CreatedAt  time.Time `json:"created_at"`
 }

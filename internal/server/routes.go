@@ -37,8 +37,8 @@ func (s *Server) RegisterRoutes() http.Handler {
 
 
 	// Buat instance middleware JWT dengan meneruskan koneksi database
-    // Asumsi s.db.Get() mengembalikan *sql.DB atau tipe yang diharapkan oleh NewJWTMiddleware
-  jwtAuthMiddleware := middleware.JWTMiddleware(s.db.Get())
+	// Asumsi s.db.Get() mengembalikan *sql.DB atau tipe yang diharapkan oleh NewJWTMiddleware
+  jwtAuthMiddleware := middleware.JWTMiddleware()
   apiRouter.Use(jwtAuthMiddleware) // Gunakan instance middleware yang sudah dibuat
 
 	// Rute Autentikasi (Login)
