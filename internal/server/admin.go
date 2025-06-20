@@ -93,9 +93,9 @@ func (s *Server) handleDeleteAdmin() http.HandlerFunc {
 
 // RegisterAdminRoutes registers all admin-related routes
 func (s *Server) RegisterAdminRoutes(r *mux.Router) {
-    r.HandleFunc("/admins", s.handleCreateAdmin()).Methods("POST")
-    r.HandleFunc("/admins", s.handleGetAdmin()).Methods("GET")           // List all admins
-    r.HandleFunc("/admins/{user_id}", s.handleGetAdmin()).Methods("GET") // Get admin by user_id
-    r.HandleFunc("/admins/{user_id}", s.handleUpdateAdmin()).Methods("PUT")
-    r.HandleFunc("/admins/{user_id}", s.handleDeleteAdmin()).Methods("DELETE")
+    r.HandleFunc("", s.handleCreateAdmin()).Methods("POST")
+    r.HandleFunc("", s.handleGetAdmin()).Methods("GET")           
+    r.HandleFunc("/{user_id}", s.handleGetAdmin()).Methods("GET") 
+    r.HandleFunc("/{user_id}", s.handleUpdateAdmin()).Methods("PUT")
+    r.HandleFunc("/{user_id}", s.handleDeleteAdmin()).Methods("DELETE")
 }
