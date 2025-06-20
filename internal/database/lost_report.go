@@ -87,6 +87,32 @@ func ListLostReports(ctx context.Context, db *sql.DB, statusFilter string) ([]Lo
 	return list, nil
 }
 
+func ListLostReportsByUserID(ctx context.Context, db *sql.DB, userID string) ([]LostReport, error) {
+    query := `SELECT lost_id, user_id, timestamp, vehicle_id, address, status, motor_evidence_image_id, person_evidence_image_id 
+              FROM lost_report 
+              WHERE user_id = $1 
+              ORDER BY timestamp DESC`
+
+    rows, err := db.QueryContext(ctx, query, userID)
+    if err != nil {
+        return nil, fmt.Errorf("error listing lost reports for user ID %s: %w", userID, err)
+    }
+    defer rows.Close()
+
+    var list []LostReport
+    for rows.Next() {
+        var lr LostReport
+        if errScan := rows.Scan(&lr.LostID, &lr.UserID, &lr.Timestamp, &lr.VehicleID, &lr.Address, &lr.Status, &lr.MotorEvidenceImageID, &lr.PersonEvidenceImageID); errScan != nil {
+            return nil, fmt.Errorf("error scanning lost report row for user ID %s: %w", userID, errScan)
+        }
+        list = append(list, lr)
+    }
+    if err = rows.Err(); err != nil {
+        return nil, fmt.Errorf("error after iterating lost report rows for user ID %s: %w", userID, err)
+    }
+    return list, nil
+}
+
 func UpdateLostReport(ctx context.Context, db *sql.DB, id int, lr *LostReport) error {
 	query := `UPDATE lost_report SET 
                 user_id=$1, 

@@ -177,7 +177,7 @@ func (s *Server) handleCreateLostReport() http.HandlerFunc {
             if errUpload != nil {
                 txErr = fmt.Errorf("failed to process motor_evidence_image: %w", errUpload)
                 fmt.Printf("ERROR: handleCreateLostReport - %v\n", txErr)
-                http.Error(w, txErr.Error(), determineImageUploadErrorStatusCodeLr(errUpload))
+                http.Error(w, txErr.Error(), determineImageUploadErrorStatusCode(errUpload))
                 return
             }
             motorEvidenceImageStoragePath = storagePath
@@ -203,7 +203,7 @@ func (s *Server) handleCreateLostReport() http.HandlerFunc {
             if errUpload != nil {
                 txErr = fmt.Errorf("failed to process person_evidence_image: %w", errUpload)
                 fmt.Printf("ERROR: handleCreateLostReport - %v\n", txErr)
-                http.Error(w, txErr.Error(), determineImageUploadErrorStatusCodeLr(errUpload))
+                http.Error(w, txErr.Error(), determineImageUploadErrorStatusCode(errUpload))
                 return
             }
             personEvidenceImageStoragePath = storagePath
@@ -254,21 +254,6 @@ func (s *Server) handleCreateLostReport() http.HandlerFunc {
         json.NewEncoder(w).Encode(response)
         fmt.Println("DEBUG: handleCreateLostReport - End")
     }
-}
-
-// Helper untuk menentukan status code error upload gambar (contoh)
-func determineImageUploadErrorStatusCodeLr(err error) int {
-	if err == nil {
-		return http.StatusOK // Seharusnya tidak dipanggil dengan err nil, tapi untuk kelengkapan
-	}
-	errMsg := strings.ToLower(err.Error()) // Konversi ke lowercase untuk pencocokan yang lebih fleksibel
-	if strings.Contains(errMsg, "file is empty") ||
-		strings.Contains(errMsg, "size exceeds") ||
-		strings.Contains(errMsg, "invalid type") || // Dari error validasi MIME
-		strings.Contains(errMsg, "mime type validation failed") { // Dari error validasi MIME
-		return http.StatusBadRequest
-	}
-	return http.StatusInternalServerError
 }
 
 // uploadAndCreateImageRecordLr menangani validasi, penyimpanan file, dan pembuatan record di tabel 'images'.
@@ -341,34 +326,9 @@ func (s *Server) uploadAndCreateImageRecordLr(ctx context.Context, tx *sql.Tx, f
     return sql.NullInt64{Int64: imgRecord.ImageID, Valid: true}, storagePath, nil
 }
 
-func (s *Server) handleGetLostReport() http.HandlerFunc {
+func (s *Server) handleListLostReports() http.HandlerFunc {
     return func(w http.ResponseWriter, r *http.Request) {
-        vars := mux.Vars(r)
-        idStr, idProvided := vars["id"]
-        db := s.db.Get() 
-
-        if idProvided && idStr != "" { 
-            id, err := strconv.Atoi(idStr)
-            if err != nil {
-                http.Error(w, "invalid lost_id: must be an integer", http.StatusBadRequest)
-                return
-            }
-            lr, err := database.GetLostReportByID(r.Context(), db, id)
-            if err != nil {
-                if err.Error() == "lost_report not found" || errors.Is(err, sql.ErrNoRows) {
-                    http.Error(w, "Lost report not found", http.StatusNotFound)
-                } else {
-                    fmt.Printf("ERROR: Failed to get lost report by ID %d: %v\n", id, err)
-                    http.Error(w, "Failed to get lost report: "+err.Error(), http.StatusInternalServerError)
-                }
-                return
-            }
-            response := s.toLostReportResponse(r.Context(), db, lr)
-            w.Header().Set("Content-Type", "application/json")
-            json.NewEncoder(w).Encode(response)
-            return
-        }
-
+        db := s.db.Get()
         statusFilter := r.URL.Query().Get("status")
         if statusFilter != "" {
             isValidStatus := false
@@ -379,7 +339,7 @@ func (s *Server) handleGetLostReport() http.HandlerFunc {
                     break
                 }
             }
-            if !isValidStatus { 
+            if !isValidStatus {
                 http.Error(w, fmt.Sprintf("Invalid status filter. Valid statuses are: %s, %s, %s", database.StatusLostReportBelumDiproses, database.StatusLostReportSedangDiproses, database.StatusLostReportSudahDitemukan), http.StatusBadRequest)
                 return
             }
@@ -393,7 +353,76 @@ func (s *Server) handleGetLostReport() http.HandlerFunc {
         }
 
         responseList := make([]LostReportResponse, 0, len(list))
-        for i := range list { 
+        for i := range list {
+            responseList = append(responseList, s.toLostReportResponse(r.Context(), db, &list[i]))
+        }
+
+        w.Header().Set("Content-Type", "application/json")
+        json.NewEncoder(w).Encode(responseList)
+    }
+}
+
+func (s *Server) handleGetLostReportByID() http.HandlerFunc {
+    return func(w http.ResponseWriter, r *http.Request) {
+        idStr := mux.Vars(r)["id"]
+        id, err := strconv.Atoi(idStr)
+        if err != nil {
+            http.Error(w, "invalid lost_id: must be an integer", http.StatusBadRequest)
+            return
+        }
+
+        db := s.db.Get()
+        lr, err := database.GetLostReportByID(r.Context(), db, id)
+        if err != nil {
+            if err.Error() == "lost_report not found" || errors.Is(err, sql.ErrNoRows) {
+                http.Error(w, "Lost report not found", http.StatusNotFound)
+            } else {
+                fmt.Printf("ERROR: Failed to get lost report by ID %d: %v\n", id, err)
+                http.Error(w, "Failed to get lost report: "+err.Error(), http.StatusInternalServerError)
+            }
+            return
+        }
+
+        // --- LOGIKA OTORISASI ---
+        requestingUserID, _ := r.Context().Value(middleware.UserIDContextKey).(string)
+        isAdmin, _ := r.Context().Value(middleware.AdminStatusContextKey).(bool)
+
+        // Tolak akses jika pengguna bukan admin DAN bukan pemilik laporan.
+        if !isAdmin && lr.UserID != requestingUserID {
+            http.Error(w, "Forbidden: You can only view your own reports or you must be an administrator.", http.StatusForbidden)
+            return
+        }
+        // --- AKHIR LOGIKA OTORISASI ---
+
+        response := s.toLostReportResponse(r.Context(), db, lr)
+        w.Header().Set("Content-Type", "application/json")
+        json.NewEncoder(w).Encode(response)
+    }
+}
+
+func (s *Server) handleGetUserLostReports() http.HandlerFunc {
+    return func(w http.ResponseWriter, r *http.Request) {
+        // Ambil ID pengguna yang membuat permintaan dari token JWT
+        requestingUserID, ok := r.Context().Value(middleware.UserIDContextKey).(string)
+        if !ok || requestingUserID == "" {
+            http.Error(w, "Unauthorized: User ID not found in token", http.StatusUnauthorized)
+            return
+        }
+
+        db := s.db.Get()
+
+        // Panggil fungsi database untuk mengambil laporan berdasarkan UserID
+        // CATATAN: Ini memerlukan fungsi baru `ListLostReportsByUserID` di package database Anda.
+        list, err := database.ListLostReportsByUserID(r.Context(), db, requestingUserID)
+        if err != nil {
+            fmt.Printf("ERROR: Failed to list lost reports for user ID '%s': %v\n", requestingUserID, err)
+            http.Error(w, "Failed to list your lost reports: "+err.Error(), http.StatusInternalServerError)
+            return
+        }
+
+        // Konversi hasil ke format respons
+        responseList := make([]LostReportResponse, 0, len(list))
+        for i := range list {
             responseList = append(responseList, s.toLostReportResponse(r.Context(), db, &list[i]))
         }
 
@@ -583,9 +612,12 @@ func (s *Server) handleDeleteLostReport() http.HandlerFunc {
 
 // RegisterLostReportRoutes mendaftarkan semua rute terkait lost_report.
 func (s *Server) RegisterLostReportRoutes(r *mux.Router) {
+    adminOnlyMiddleware := middleware.AdminOnlyMiddleware()
+
     r.HandleFunc("/lost_reports", s.handleCreateLostReport()).Methods("POST")
-    r.HandleFunc("/lost_reports", s.handleGetLostReport()).Methods("GET")
-    r.HandleFunc("/lost_reports/{id}", s.handleGetLostReport()).Methods("GET") // Seharusnya id adalah integer
+    r.Handle("/lost_reports", adminOnlyMiddleware(s.handleListLostReports())).Methods("GET")
+    r.HandleFunc("/lost_reports/my", s.handleGetUserLostReports()).Methods("GET")
+    r.HandleFunc("/lost_reports/{id}", s.handleGetLostReportByID()).Methods("GET") // Seharusnya id adalah integer
     r.HandleFunc("/lost_reports/{id:[0-9]+}", s.handleUpdateLostReport()).Methods("PUT") // Pastikan id adalah integer
     r.HandleFunc("/lost_reports/{id:[0-9]+}", s.handleDeleteLostReport()).Methods("DELETE") // Pastikan id adalah integer
 }
