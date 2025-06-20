@@ -40,14 +40,23 @@ func (s *Server) RegisterRoutes() http.Handler {
 	// Asumsi s.db.Get() mengembalikan *sql.DB atau tipe yang diharapkan oleh NewJWTMiddleware
   jwtAuthMiddleware := middleware.JWTMiddleware()
   apiRouter.Use(jwtAuthMiddleware) // Gunakan instance middleware yang sudah dibuat
+	
+	// --- Rute yang Dilindungi Admin ---
+	// Buat instance middleware admin
+	adminOnlyMiddleware := middleware.AdminOnlyMiddleware()
 
+	// Buat subrouter baru khusus untuk admin
+	adminRouter := apiRouter.PathPrefix("/admins").Subrouter()
+	adminRouter.Use(adminOnlyMiddleware) 
+
+	s.RegisterAdminRoutes(adminRouter)
+	
 	// Rute Autentikasi (Login)
 	s.RegisterAuthRoutes(mainRouter)
 
 	s.RegisterUserProtectedRoutes(apiRouter)
 	s.RegisterVehicleRoutes(apiRouter)      
-	s.RegisterDetectedRoutes(apiRouter)    
-	s.RegisterAdminRoutes(apiRouter)         
+	s.RegisterDetectedRoutes(apiRouter)             
 	s.RegisterCameraRoutes(apiRouter)        
 	s.RegisterLostReportRoutes(apiRouter)    
 	s.RegisterSuspectRoutes(apiRouter)       
