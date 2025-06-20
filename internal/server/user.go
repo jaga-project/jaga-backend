@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
 	"github.com/jaga-project/jaga-backend/internal/database"
+	"github.com/jaga-project/jaga-backend/internal/middleware"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -256,43 +257,61 @@ func (s *Server) handleGetUserByID() http.HandlerFunc {
 
 func (s *Server) handleUpdateUser() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		userID := mux.Vars(r)["id"]
-		var userUpdates database.User
-		if err := json.NewDecoder(r.Body).Decode(&userUpdates); err != nil {
-			http.Error(w, "Invalid request payload: "+err.Error(), http.StatusBadRequest)
-			return
-		}
+		// Ambil ID user target dari URL
+        targetUserID := mux.Vars(r)["id"]
 
-		if userUpdates.Password != "" {
-			hashedPasswordBytes, err := bcrypt.GenerateFromPassword([]byte(userUpdates.Password), bcrypt.DefaultCost)
-			if err != nil {
-				http.Error(w, "Failed to hash new password: "+err.Error(), http.StatusInternalServerError)
-				return
-			}
-			userUpdates.Password = string(hashedPasswordBytes)
-		}
+        // Ambil info user yang membuat permintaan dari token JWT (via context)
+        requestingUserID, ok := r.Context().Value(middleware.UserIDContextKey).(string)
+        if !ok {
+            http.Error(w, "Unauthorized: User ID not found in token", http.StatusUnauthorized)
+            return
+        }
+        isRequestingUserAdmin, _ := r.Context().Value(middleware.AdminStatusContextKey).(bool)
 
-		if err := database.UpdateSingleUser(s.db.Get(), userID, userUpdates, r.Context()); err != nil {
-			if err.Error() == "user not found for update" || err == sql.ErrNoRows {
-				http.Error(w, "User not found for update", http.StatusNotFound)
-			} else {
-				http.Error(w, "Failed to update user: "+err.Error(), http.StatusInternalServerError)
-			}
-			return
-		}
+        // LOGIKA OTORISASI:
+        // Izinkan jika pengguna adalah admin ATAU jika pengguna sedang memperbarui profilnya sendiri.
+        if !isRequestingUserAdmin && requestingUserID != targetUserID {
+            http.Error(w, "Forbidden: You can only update your own profile", http.StatusForbidden)
+            return
+        }
 
-		updatedUser, err := database.FindUserByID(s.db.Get(), userID, r.Context())
-		if err != nil {
-			w.WriteHeader(http.StatusOK)
-			json.NewEncoder(w).Encode(map[string]string{"message": "User updated successfully, but failed to retrieve updated record."})
-			return
-		}
-		updatedUser.Password = ""
+        w.Header().Set("Content-Type", "application/json")
+        var userUpdates database.User
+        if err := json.NewDecoder(r.Body).Decode(&userUpdates); err != nil {
+            http.Error(w, "Invalid request payload: "+err.Error(), http.StatusBadRequest)
+            return
+        }
 
-		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(updatedUser)
-	}
+        if userUpdates.Password != "" {
+            hashedPasswordBytes, err := bcrypt.GenerateFromPassword([]byte(userUpdates.Password), bcrypt.DefaultCost)
+            if err != nil {
+                http.Error(w, "Failed to hash new password: "+err.Error(), http.StatusInternalServerError)
+                return
+            }
+            userUpdates.Password = string(hashedPasswordBytes)
+        }
+
+        // Gunakan targetUserID dari URL untuk update, bukan dari body
+        if err := database.UpdateSingleUser(s.db.Get(), targetUserID, userUpdates, r.Context()); err != nil {
+            if err.Error() == "user not found for update" || err == sql.ErrNoRows {
+                http.Error(w, "User not found for update", http.StatusNotFound)
+            } else {
+                http.Error(w, "Failed to update user: "+err.Error(), http.StatusInternalServerError)
+            }
+            return
+        }
+
+        updatedUser, err := database.FindUserByID(s.db.Get(), targetUserID, r.Context())
+        if err != nil {
+            w.WriteHeader(http.StatusOK)
+            json.NewEncoder(w).Encode(map[string]string{"message": "User updated successfully, but failed to retrieve updated record."})
+            return
+        }
+        updatedUser.Password = ""
+
+        w.WriteHeader(http.StatusOK)
+        json.NewEncoder(w).Encode(updatedUser)
+    }
 }
 
 func (s *Server) handleDeleteUser() http.HandlerFunc {
@@ -317,8 +336,9 @@ func (s *Server) RegisterUserRoutes(r *mux.Router) {
 
 // RegisterUserProtectedRoutes registers routes that require authentication
 func (s *Server) RegisterUserProtectedRoutes(r *mux.Router) {
-	r.HandleFunc("/users", s.handleGetUser()).Methods("GET")       // List all atau by email
+	adminOnlyMiddleware := middleware.AdminOnlyMiddleware()
+	r.Handle("/users", adminOnlyMiddleware(s.handleGetUser())).Methods("GET")       // List all atau by email
 	r.HandleFunc("/users/{id}", s.handleGetUserByID()).Methods("GET") // Get by UserID
 	r.HandleFunc("/users/{id}", s.handleUpdateUser()).Methods("PUT")
-	r.HandleFunc("/users/{id}", s.handleDeleteUser()).Methods("DELETE")
+	r.Handle("/users/{id}", adminOnlyMiddleware(s.handleDeleteUser())).Methods("DELETE")
 }

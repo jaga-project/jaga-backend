@@ -650,7 +650,7 @@ func (s *Server) deleteImageRecordAndFile(ctx context.Context, tx *sql.Tx, image
 func (s *Server) RegisterVehicleRoutes(r *mux.Router) {
     r.HandleFunc("/vehicles", s.handleCreateVehicle()).Methods("POST")
     r.HandleFunc("/vehicles", s.handleGetVehicle()).Methods("GET")
-		r.HandleFunc("/vehicles/my", s.handleGetUserVehicles()).Methods("GET")
+	r.HandleFunc("/vehicles/my", s.handleGetUserVehicles()).Methods("GET")
     r.HandleFunc("/vehicles/{id:[0-9]+}", s.handleGetVehicle()).Methods("GET")
     r.HandleFunc("/vehicles/plate/{plate_number}", s.handleGetVehicleByPlate()).Methods("GET")
     r.HandleFunc("/vehicles/{id:[0-9]+}", s.handleUpdateVehicle()).Methods("PUT")

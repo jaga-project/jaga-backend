@@ -8,7 +8,7 @@ import (
 )
 
 type Suspect struct {
-    SuspectID  int64     `json:"suspect_id"` // bigserial
+    SuspectID  int64     `json:"suspect_id"`
     DetectedID int64     `json:"detected_id"`
     LostID     int64     `json:"lost_id"`
     Score      float64   `json:"score"`
