@@ -7,6 +7,7 @@ import (
 	"os"
 	"strconv"
 	"time"
+	"strings"
 
 	"github.com/gorilla/handlers" 
 	"github.com/jaga-project/jaga-backend/internal/database"
@@ -32,11 +33,19 @@ func NewServer() *http.Server {
 		db:   database.New(),
 	}
 
-	allowedOrigins := handlers.AllowedOrigins([]string{"http://localhost:3000", "http://100.115.148.124","http://100.115.148.124:3000","http://100.72.88.10"}) // Tambahkan IP atau domain frontend Anda
-	allowedMethods := handlers.AllowedMethods([]string{"GET", "POST", "PUT", "DELETE", "OPTIONS"})
-	allowedHeaders := handlers.AllowedHeaders([]string{"Content-Type", "Authorization", "X-Requested-With"})
-	allowCredentials := handlers.AllowCredentials()
+	corsOriginsStr := os.Getenv("CORS_ALLOWED_ORIGINS")
+    if corsOriginsStr == "" {
+        // Default ke localhost jika variabel tidak di-set
+        corsOriginsStr = "http://localhost:3000"
+        log.Printf("WARN: CORS_ALLOWED_ORIGINS environment variable not set. Defaulting to '%s'", corsOriginsStr)
+    }
+    allowedOriginsList := strings.Split(corsOriginsStr, ",")
+    log.Printf("INFO: Configuring CORS with allowed origins: %v", allowedOriginsList)
 
+    allowedOrigins := handlers.AllowedOrigins(allowedOriginsList)
+    allowedMethods := handlers.AllowedMethods([]string{"GET", "POST", "PUT", "DELETE", "OPTIONS"})
+    allowedHeaders := handlers.AllowedHeaders([]string{"Content-Type", "Authorization", "X-Requested-With"})
+    allowCredentials := handlers.AllowCredentials()
 	mainHandler := newServer.RegisterRoutes()
 
 	server := &http.Server{
