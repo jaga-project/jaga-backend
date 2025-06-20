@@ -79,7 +79,7 @@ func (s *Server) handleCreateLostReport() http.HandlerFunc {
         fmt.Printf("DEBUG: handleCreateLostReport - Parsing multipart form with max size: %d bytes\n", maxTotalSize)
         if err := r.ParseMultipartForm(int64(maxTotalSize)); err != nil {
             fmt.Printf("ERROR: handleCreateLostReport - Failed to parse multipart form: %v\n", err)
-            http.Error(w, "Request too large or invalid multipart form: "+err.Error(), http.StatusBadRequest)
+            writeJSONError(w, "Request too large or invalid multipart form: "+err.Error(), http.StatusBadRequest)
             return
         }
 
@@ -88,7 +88,7 @@ func (s *Server) handleCreateLostReport() http.HandlerFunc {
 
         requestingUserID, ok := r.Context().Value(middleware.UserIDContextKey).(string)
         if !ok || requestingUserID == "" {
-            http.Error(w, "Unauthorized: User ID not found in token", http.StatusUnauthorized)
+            writeJSONError(w, "Unauthorized: User ID not found in token", http.StatusUnauthorized)
             return
         }
         lr.UserID = requestingUserID
@@ -99,29 +99,29 @@ func (s *Server) handleCreateLostReport() http.HandlerFunc {
         } else {
             lr.Timestamp, err = time.Parse(time.RFC3339, timestampStr)
             if err != nil {
-                http.Error(w, fmt.Sprintf("Invalid timestamp format. Use RFC3339. Error: %v", err), http.StatusBadRequest)
+                writeJSONError(w, fmt.Sprintf("Invalid timestamp format. Use RFC3339. Error: %v", err), http.StatusBadRequest)
                 return
             }
             if lr.Timestamp.After(time.Now().Add(5 * time.Minute)) {
-                http.Error(w, "timestamp (waktu kejadian) cannot be unreasonably in the future", http.StatusBadRequest)
+                writeJSONError(w, "timestamp (waktu kejadian) cannot be unreasonably in the future", http.StatusBadRequest)
                 return
             }
         }
 
         vehicleIDStr := r.FormValue("vehicle_id")
         if vehicleIDStr == "" {
-            http.Error(w, "vehicle_id is required", http.StatusBadRequest)
+            writeJSONError(w, "vehicle_id is required", http.StatusBadRequest)
             return
         }
         lr.VehicleID, err = strconv.Atoi(vehicleIDStr)
         if err != nil {
-            http.Error(w, "Invalid vehicle_id: must be an integer", http.StatusBadRequest)
+            writeJSONError(w, "Invalid vehicle_id: must be an integer", http.StatusBadRequest)
             return
         }
 
         lr.Address = r.FormValue("address")
         if lr.Address == "" {
-            http.Error(w, "address is required", http.StatusBadRequest)
+            writeJSONError(w, "address is required", http.StatusBadRequest)
             return
         }
 
@@ -146,7 +146,7 @@ func (s *Server) handleCreateLostReport() http.HandlerFunc {
         tx, err := s.db.Get().BeginTx(r.Context(), nil)
         if err != nil {
             fmt.Printf("ERROR: handleCreateLostReport - Failed to start database transaction: %v\n", err)
-            http.Error(w, "Failed to start database transaction", http.StatusInternalServerError)
+            writeJSONError(w, "Failed to start database transaction", http.StatusInternalServerError)
             return
         }
         var txErr error 
@@ -177,7 +177,8 @@ func (s *Server) handleCreateLostReport() http.HandlerFunc {
             if errUpload != nil {
                 txErr = fmt.Errorf("failed to process motor_evidence_image: %w", errUpload)
                 fmt.Printf("ERROR: handleCreateLostReport - %v\n", txErr)
-                http.Error(w, txErr.Error(), determineImageUploadErrorStatusCode(errUpload))
+                // NOTE: determineImageUploadErrorStatusCode is assumed to exist from a previous step
+                writeJSONError(w, txErr.Error(), determineImageUploadErrorStatusCode(errUpload))
                 return
             }
             motorEvidenceImageStoragePath = storagePath
@@ -188,7 +189,7 @@ func (s *Server) handleCreateLostReport() http.HandlerFunc {
         } else if errMotorFile != http.ErrMissingFile {
             txErr = fmt.Errorf("error retrieving motor_evidence_image: %w", errMotorFile)
             fmt.Printf("ERROR: handleCreateLostReport - %v\n", txErr)
-            http.Error(w, txErr.Error(), http.StatusBadRequest)
+            writeJSONError(w, txErr.Error(), http.StatusBadRequest)
             return
         } else {
             fmt.Println("DEBUG: handleCreateLostReport - motor_evidence_image not provided (optional)")
@@ -203,7 +204,8 @@ func (s *Server) handleCreateLostReport() http.HandlerFunc {
             if errUpload != nil {
                 txErr = fmt.Errorf("failed to process person_evidence_image: %w", errUpload)
                 fmt.Printf("ERROR: handleCreateLostReport - %v\n", txErr)
-                http.Error(w, txErr.Error(), determineImageUploadErrorStatusCode(errUpload))
+                // NOTE: determineImageUploadErrorStatusCode is assumed to exist from a previous step
+                writeJSONError(w, txErr.Error(), determineImageUploadErrorStatusCode(errUpload))
                 return
             }
             personEvidenceImageStoragePath = storagePath
@@ -214,7 +216,7 @@ func (s *Server) handleCreateLostReport() http.HandlerFunc {
         } else if errPersonFile != http.ErrMissingFile {
             txErr = fmt.Errorf("error retrieving person_evidence_image: %w", errPersonFile)
             fmt.Printf("ERROR: handleCreateLostReport - %v\n", txErr)
-            http.Error(w, txErr.Error(), http.StatusBadRequest)
+            writeJSONError(w, txErr.Error(), http.StatusBadRequest)
             return
         } else {
             fmt.Println("DEBUG: handleCreateLostReport - person_evidence_image not provided (optional)")
@@ -224,7 +226,7 @@ func (s *Server) handleCreateLostReport() http.HandlerFunc {
         txErr = database.CreateLostReportTx(r.Context(), tx, &lr)
         if txErr != nil {
             fmt.Printf("ERROR: handleCreateLostReport - Failed to create lost report record in transaction: %v\n", txErr)
-            http.Error(w, "Failed to create lost report record: "+txErr.Error(), http.StatusInternalServerError)
+            writeJSONError(w, "Failed to create lost report record: "+txErr.Error(), http.StatusInternalServerError)
             return
         }
 
@@ -232,7 +234,7 @@ func (s *Server) handleCreateLostReport() http.HandlerFunc {
         txErr = tx.Commit()
         if txErr != nil {
             fmt.Printf("ERROR: handleCreateLostReport - Failed to commit database transaction: %v\n", txErr)
-            http.Error(w, "Failed to commit database transaction", http.StatusInternalServerError)
+            writeJSONError(w, "Failed to commit database transaction", http.StatusInternalServerError)
             return
         }
 
@@ -340,7 +342,7 @@ func (s *Server) handleListLostReports() http.HandlerFunc {
                 }
             }
             if !isValidStatus {
-                http.Error(w, fmt.Sprintf("Invalid status filter. Valid statuses are: %s, %s, %s", database.StatusLostReportBelumDiproses, database.StatusLostReportSedangDiproses, database.StatusLostReportSudahDitemukan), http.StatusBadRequest)
+                writeJSONError(w, fmt.Sprintf("Invalid status filter. Valid statuses are: %s, %s, %s", database.StatusLostReportBelumDiproses, database.StatusLostReportSedangDiproses, database.StatusLostReportSudahDitemukan), http.StatusBadRequest)
                 return
             }
         }
@@ -348,7 +350,7 @@ func (s *Server) handleListLostReports() http.HandlerFunc {
         list, err := database.ListLostReports(r.Context(), db, statusFilter)
         if err != nil {
             fmt.Printf("ERROR: Failed to list lost reports (filter: '%s'): %v\n", statusFilter, err)
-            http.Error(w, "Failed to list lost reports: "+err.Error(), http.StatusInternalServerError)
+            writeJSONError(w, "Failed to list lost reports: "+err.Error(), http.StatusInternalServerError)
             return
         }
 
@@ -367,7 +369,7 @@ func (s *Server) handleGetLostReportByID() http.HandlerFunc {
         idStr := mux.Vars(r)["id"]
         id, err := strconv.Atoi(idStr)
         if err != nil {
-            http.Error(w, "invalid lost_id: must be an integer", http.StatusBadRequest)
+            writeJSONError(w, "invalid lost_id: must be an integer", http.StatusBadRequest)
             return
         }
 
@@ -375,10 +377,10 @@ func (s *Server) handleGetLostReportByID() http.HandlerFunc {
         lr, err := database.GetLostReportByID(r.Context(), db, id)
         if err != nil {
             if err.Error() == "lost_report not found" || errors.Is(err, sql.ErrNoRows) {
-                http.Error(w, "Lost report not found", http.StatusNotFound)
+                writeJSONError(w, "Lost report not found", http.StatusNotFound)
             } else {
                 fmt.Printf("ERROR: Failed to get lost report by ID %d: %v\n", id, err)
-                http.Error(w, "Failed to get lost report: "+err.Error(), http.StatusInternalServerError)
+                writeJSONError(w, "Failed to get lost report: "+err.Error(), http.StatusInternalServerError)
             }
             return
         }
@@ -389,7 +391,7 @@ func (s *Server) handleGetLostReportByID() http.HandlerFunc {
 
         // Tolak akses jika pengguna bukan admin DAN bukan pemilik laporan.
         if !isAdmin && lr.UserID != requestingUserID {
-            http.Error(w, "Forbidden: You can only view your own reports or you must be an administrator.", http.StatusForbidden)
+            writeJSONError(w, "Forbidden: You can only view your own reports or you must be an administrator.", http.StatusForbidden)
             return
         }
         // --- AKHIR LOGIKA OTORISASI ---
@@ -405,7 +407,7 @@ func (s *Server) handleGetUserLostReports() http.HandlerFunc {
         // Ambil ID pengguna yang membuat permintaan dari token JWT
         requestingUserID, ok := r.Context().Value(middleware.UserIDContextKey).(string)
         if !ok || requestingUserID == "" {
-            http.Error(w, "Unauthorized: User ID not found in token", http.StatusUnauthorized)
+            writeJSONError(w, "Unauthorized: User ID not found in token", http.StatusUnauthorized)
             return
         }
 
@@ -416,7 +418,7 @@ func (s *Server) handleGetUserLostReports() http.HandlerFunc {
         list, err := database.ListLostReportsByUserID(r.Context(), db, requestingUserID)
         if err != nil {
             fmt.Printf("ERROR: Failed to list lost reports for user ID '%s': %v\n", requestingUserID, err)
-            http.Error(w, "Failed to list your lost reports: "+err.Error(), http.StatusInternalServerError)
+            writeJSONError(w, "Failed to list your lost reports: "+err.Error(), http.StatusInternalServerError)
             return
         }
 
@@ -436,20 +438,20 @@ func (s *Server) handleUpdateLostReport() http.HandlerFunc {
         idStr := mux.Vars(r)["id"]
         id, err := strconv.Atoi(idStr)
         if err != nil {
-            http.Error(w, "invalid lost_id: must be an integer", http.StatusBadRequest)
+            writeJSONError(w, "invalid lost_id: must be an integer", http.StatusBadRequest)
             return
         }
 
         var lrUpdates database.LostReport 
         
         if err := json.NewDecoder(r.Body).Decode(&lrUpdates); err != nil {
-            http.Error(w, "Invalid request payload: "+err.Error(), http.StatusBadRequest)
+            writeJSONError(w, "Invalid request payload: "+err.Error(), http.StatusBadRequest)
             return
         }
 
         requestingUserID, ok := r.Context().Value(middleware.UserIDContextKey).(string)
         if !ok || requestingUserID == "" {
-            http.Error(w, "Unauthorized: User ID not found in token", http.StatusUnauthorized)
+            writeJSONError(w, "Unauthorized: User ID not found in token", http.StatusUnauthorized)
             return
         }
         isAdmin, _ := r.Context().Value(middleware.AdminStatusContextKey).(bool)
@@ -457,9 +459,9 @@ func (s *Server) handleUpdateLostReport() http.HandlerFunc {
         existingLR, err := database.GetLostReportByID(r.Context(), s.db.Get(), id)
         if err != nil {
             if err.Error() == "lost_report not found" {
-                http.Error(w, "Lost report not found", http.StatusNotFound)
+                writeJSONError(w, "Lost report not found", http.StatusNotFound)
             } else {
-                http.Error(w, "Failed to retrieve existing report: "+err.Error(), http.StatusInternalServerError)
+                writeJSONError(w, "Failed to retrieve existing report: "+err.Error(), http.StatusInternalServerError)
             }
             return
         }
@@ -479,7 +481,7 @@ func (s *Server) handleUpdateLostReport() http.HandlerFunc {
                     }
                 }
                 if !isValidNewStatus {
-                    http.Error(w, fmt.Sprintf("Invalid status value. Valid statuses are: %s, %s, %s", database.StatusLostReportBelumDiproses, database.StatusLostReportSedangDiproses, database.StatusLostReportSudahDitemukan), http.StatusBadRequest)
+                    writeJSONError(w, fmt.Sprintf("Invalid status value. Valid statuses are: %s, %s, %s", database.StatusLostReportBelumDiproses, database.StatusLostReportSedangDiproses, database.StatusLostReportSudahDitemukan), http.StatusBadRequest)
                     return
                 }
                 reportToUpdate.Status = lrUpdates.Status
@@ -490,7 +492,7 @@ func (s *Server) handleUpdateLostReport() http.HandlerFunc {
         if existingLR.UserID == requestingUserID {
             if !lrUpdates.Timestamp.IsZero() && lrUpdates.Timestamp != existingLR.Timestamp {
                 if lrUpdates.Timestamp.After(time.Now().Add(5 * time.Minute)) {
-                    http.Error(w, "timestamp (waktu kejadian) cannot be unreasonably in the future", http.StatusBadRequest)
+                    writeJSONError(w, "timestamp (waktu kejadian) cannot be unreasonably in the future", http.StatusBadRequest)
                     return
                 }
                 reportToUpdate.Timestamp = lrUpdates.Timestamp
@@ -517,7 +519,7 @@ func (s *Server) handleUpdateLostReport() http.HandlerFunc {
             }
         } else {
             if !isAdmin {
-                http.Error(w, "Forbidden: You can only update your own report's details or an admin can update status.", http.StatusForbidden)
+                writeJSONError(w, "Forbidden: You can only update your own report's details or an admin can update status.", http.StatusForbidden)
                 return
             }
             if (lrUpdates.Timestamp != existingLR.Timestamp && !lrUpdates.Timestamp.IsZero()) ||
@@ -526,7 +528,7 @@ func (s *Server) handleUpdateLostReport() http.HandlerFunc {
                 (lrUpdates.MotorEvidenceImageID != existingLR.MotorEvidenceImageID) ||
                 (lrUpdates.PersonEvidenceImageID != existingLR.PersonEvidenceImageID) {
                 if !updatedByAdmin {
-                    http.Error(w, "Forbidden: Admin can only update status or owner can update details.", http.StatusForbidden)
+                    writeJSONError(w, "Forbidden: Admin can only update status or owner can update details.", http.StatusForbidden)
                     return
                 }
             }
@@ -545,7 +547,7 @@ func (s *Server) handleUpdateLostReport() http.HandlerFunc {
         }
 
         if err := database.UpdateLostReport(r.Context(), s.db.Get(), id, &reportToUpdate); err != nil {
-            http.Error(w, "Failed to update lost report: "+err.Error(), http.StatusInternalServerError)
+            writeJSONError(w, "Failed to update lost report: "+err.Error(), http.StatusInternalServerError)
             return
         }
 
@@ -572,13 +574,13 @@ func (s *Server) handleDeleteLostReport() http.HandlerFunc {
         idStr := mux.Vars(r)["id"]
         id, err := strconv.Atoi(idStr)
         if err != nil {
-            http.Error(w, "invalid lost_id: must be an integer", http.StatusBadRequest)
+            writeJSONError(w, "invalid lost_id: must be an integer", http.StatusBadRequest)
             return
         }
 
         requestingUserID, ok := r.Context().Value(middleware.UserIDContextKey).(string)
         if !ok || requestingUserID == "" {
-            http.Error(w, "Unauthorized: User ID not found in token", http.StatusUnauthorized)
+            writeJSONError(w, "Unauthorized: User ID not found in token", http.StatusUnauthorized)
             return
         }
         isAdmin, _ := r.Context().Value(middleware.AdminStatusContextKey).(bool)
@@ -587,15 +589,15 @@ func (s *Server) handleDeleteLostReport() http.HandlerFunc {
         existingLR, err := database.GetLostReportByID(r.Context(), s.db.Get(), id)
         if err != nil {
             if err.Error() == "lost_report not found" {
-                http.Error(w, "Lost report not found", http.StatusNotFound)
+                writeJSONError(w, "Lost report not found", http.StatusNotFound)
             } else {
-                http.Error(w, "Failed to retrieve existing report: "+err.Error(), http.StatusInternalServerError)
+                writeJSONError(w, "Failed to retrieve existing report: "+err.Error(), http.StatusInternalServerError)
             }
             return
         }
 
         if !isAdmin && existingLR.UserID != requestingUserID {
-            http.Error(w, "Forbidden: You can only delete your own reports or an admin can delete any report.", http.StatusForbidden)
+            writeJSONError(w, "Forbidden: You can only delete your own reports or an admin can delete any report.", http.StatusForbidden)
             return
         }
 
@@ -603,7 +605,7 @@ func (s *Server) handleDeleteLostReport() http.HandlerFunc {
         // dan juga dari tabel 'images'. Ini memerlukan logika tambahan dan transaksi.
 
         if err := database.DeleteLostReport(r.Context(), s.db.Get(), id); err != nil {
-            http.Error(w, "Failed to delete lost report: "+err.Error(), http.StatusInternalServerError)
+            writeJSONError(w, "Failed to delete lost report: "+err.Error(), http.StatusInternalServerError)
             return
         }
         w.WriteHeader(http.StatusNoContent)
@@ -617,7 +619,7 @@ func (s *Server) RegisterLostReportRoutes(r *mux.Router) {
     r.HandleFunc("/lost_reports", s.handleCreateLostReport()).Methods("POST")
     r.Handle("/lost_reports", adminOnlyMiddleware(s.handleListLostReports())).Methods("GET")
     r.HandleFunc("/lost_reports/my", s.handleGetUserLostReports()).Methods("GET")
-    r.HandleFunc("/lost_reports/{id}", s.handleGetLostReportByID()).Methods("GET") // Seharusnya id adalah integer
+    r.HandleFunc("/lost_reports/{id:[0-9]+}", s.handleGetLostReportByID()).Methods("GET") // Seharusnya id adalah integer
     r.HandleFunc("/lost_reports/{id:[0-9]+}", s.handleUpdateLostReport()).Methods("PUT") // Pastikan id adalah integer
     r.HandleFunc("/lost_reports/{id:[0-9]+}", s.handleDeleteLostReport()).Methods("DELETE") // Pastikan id adalah integer
 }
