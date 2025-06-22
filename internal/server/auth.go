@@ -2,12 +2,13 @@ package server
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
 	"time"
-	"log"
+
 	"github.com/gorilla/mux"
-	"github.com/jaga-project/jaga-backend/internal/auth"    
-	"github.com/jaga-project/jaga-backend/internal/database" 
+	"github.com/jaga-project/jaga-backend/internal/auth"
+	"github.com/jaga-project/jaga-backend/internal/database"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -32,51 +33,43 @@ func (s *Server) handleLogin() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req LoginRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			http.Error(w, "Invalid request payload: "+err.Error(), http.StatusBadRequest)
+			writeJSONError(w, "Invalid request payload: "+err.Error(), http.StatusBadRequest)
 			return
 		}
 
 		if req.Email == "" || req.Password == "" {
-			http.Error(w, "Email and password are required", http.StatusBadRequest)
+			writeJSONError(w, "Email and password are required", http.StatusBadRequest)
 			return
 		}
 
 		user, err := database.FindSingleUser(s.db.Get(), req.Email, r.Context())
 		if err != nil {
 			if err.Error() == "user not found" {
-				http.Error(w, "Invalid email or password", http.StatusUnauthorized)
+				writeJSONError(w, "Invalid email or password", http.StatusUnauthorized)
 			} else {
-				http.Error(w, "Error finding user: "+err.Error(), http.StatusInternalServerError)
+				writeJSONError(w, "Error finding user: "+err.Error(), http.StatusInternalServerError)
 			}
 			return
 		}
 
 		err = bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(req.Password))
 		if err != nil {
-			http.Error(w, "Invalid email or password", http.StatusUnauthorized)
+			writeJSONError(w, "Invalid email or password", http.StatusUnauthorized)
 			return
 		}
 
-		var isAdmin bool
 		// Cek status admin SEKALI di sini
-		isAdmin, err = database.IsUserAdmin(s.db.Get(), user.UserID)
+		isAdmin, err := database.IsUserAdmin(s.db.Get(), user.UserID)
 		if err != nil {
-			// Tangani error, mungkin log saja dan anggap bukan admin
+			// Tangani error, log saja dan anggap bukan admin untuk keamanan
 			log.Printf("Failed to check admin status for %s during login: %v", user.UserID, err)
 			isAdmin = false
-    }
+		}
 
 		tokenString, expiresAt, err := auth.GenerateJWT(user.UserID, isAdmin)
 		if err != nil {
-			http.Error(w, "Failed to generate token: "+err.Error(), http.StatusInternalServerError)
+			writeJSONError(w, "Failed to generate token: "+err.Error(), http.StatusInternalServerError)
 			return
-		}
-
-		_, err = database.GetAdminByUserID(r.Context(), s.db.Get(), user.UserID)
-		if err == nil { 
-			isAdmin = true
-		} else if err.Error() != "admin not found" { 
-			log.Printf("Error checking admin status for user %s: %v", user.UserID, err)
 		}
 
 		//token dan detail user
@@ -97,15 +90,13 @@ func (s *Server) handleLogin() http.HandlerFunc {
 
 // RegisterAuthRoutes mendaftarkan rute untuk autentikasi.
 func (s *Server) RegisterAuthRoutes(r *mux.Router) {
-	authRouter := r.PathPrefix("/auth").Subrouter()
-	authRouter.HandleFunc("/login", s.handleLogin()).Methods("POST")
+	r.HandleFunc("/auth/login", s.handleLogin()).Methods("POST")
 
 	// Rute registrasi user (handleCreateUser) bisa tetap di RegisterUserRoutes
 	// atau dipindahkan ke sini jika Anda ingin semua yang terkait auth ada di satu tempat.
 	// Jika tetap di RegisterUserRoutes, pastikan itu adalah rute publik.
 	// Contoh:
-	// userRouter := r.PathPrefix("/users").Subrouter() // Ini akan menjadi publik
-	// userRouter.HandleFunc("", s.handleCreateUser()).Methods("POST") // Endpoint registrasi
+	// r.HandleFunc("/users", s.handleCreateUser()).Methods("POST") // Endpoint registrasi publik
 }
 
 

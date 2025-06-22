@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"strings"
 
@@ -19,20 +20,26 @@ func JWTMiddleware() func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			authHeader := r.Header.Get("Authorization")
 			if authHeader == "" {
-				http.Error(w, "Authorization header required", http.StatusUnauthorized)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusUnauthorized)
+				json.NewEncoder(w).Encode(map[string]string{"error": "Authorization header required"})
 				return
 			}
 
 			parts := strings.Split(authHeader, " ")
 			if len(parts) != 2 || strings.ToLower(parts[0]) != "bearer" {
-				http.Error(w, "Invalid Authorization header format (must be Bearer {token})", http.StatusUnauthorized)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusUnauthorized)
+				json.NewEncoder(w).Encode(map[string]string{"error": "Invalid Authorization header format (must be Bearer {token})"})
 				return
 			}
 			tokenString := parts[1]
 
 			claims, err := auth.ValidateJWT(tokenString)
 			if err != nil {
-				http.Error(w, err.Error(), http.StatusUnauthorized)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusUnauthorized)
+				json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 				return
 			}
 
@@ -53,9 +60,9 @@ func AdminOnlyMiddleware() func(http.Handler) http.Handler {
 
             // Jika status tidak ada (bukan boolean) atau false, tolak akses.
             if !ok || !isAdmin {
-                // 403 Forbidden adalah status yang tepat:
-                // "Server mengerti permintaan Anda, tetapi menolak untuk mengotorisasinya."
-                http.Error(w, "Forbidden: Administrator access required", http.StatusForbidden)
+                w.Header().Set("Content-Type", "application/json")
+                w.WriteHeader(http.StatusForbidden)
+                json.NewEncoder(w).Encode(map[string]string{"error": "Forbidden: Administrator access required"})
                 return
             }
 
