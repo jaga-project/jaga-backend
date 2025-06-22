@@ -59,7 +59,6 @@ func (s *Server) toDetectedResponse(ctx context.Context, dbQuerier database.Quer
     return response
 }
 
-
 func processImageUpload(r *http.Request, formFieldName string, tx *sql.Tx) (sql.NullInt64, string, error) {
     file, handler, err := r.FormFile(formFieldName)
     if err != nil {
@@ -228,13 +227,13 @@ func (s *Server) handleCreateDetected() http.HandlerFunc {
 
 func (s *Server) handleGetDetected() http.HandlerFunc {
     return func(w http.ResponseWriter, r *http.Request) {
-        // Ganti http.Error dengan writeJSONError jika Anda sudah mengimplementasikannya secara global
         w.Header().Set("Content-Type", "application/json")
         vars := mux.Vars(r)
         idStr, idExists := vars["id"]
-        db := s.db.Get() // Dapatkan *sql.DB instance
+        db := s.db.Get()
 
-        if idExists && idStr != "" { // Get by ID
+        // Prioritas 1: Get by specific ID jika ada di path
+        if idExists && idStr != "" {
             id, err := strconv.Atoi(idStr)
             if err != nil {
                 writeJSONError(w, "Invalid detected_id: must be an integer", http.StatusBadRequest)
@@ -258,7 +257,72 @@ func (s *Server) handleGetDetected() http.HandlerFunc {
         queryParams := r.URL.Query()
         startTimeStr := queryParams.Get("start_time")
         endTimeStr := queryParams.Get("end_time")
+        lostIDStr := queryParams.Get("lostid")
+        radiusStr := queryParams.Get("radius_km") // Menggunakan nama parameter yang konsisten
+        latStr := queryParams.Get("lat")
+        lonStr := queryParams.Get("lon")
 
+        // Prioritas 2: Filter gabungan (Waktu + Jarak dari Laporan Kehilangan)
+        if startTimeStr != "" && endTimeStr != "" && lostIDStr != "" && radiusStr != "" {
+            // 1. Parse semua parameter yang diperlukan
+            lostID, err := strconv.Atoi(lostIDStr)
+            if err != nil {
+                writeJSONError(w, "invalid lostid: must be an integer", http.StatusBadRequest)
+                return
+            }
+            radiusKm, err := strconv.ParseFloat(radiusStr, 64)
+            if err != nil || radiusKm <= 0 {
+                writeJSONError(w, "invalid radius_km: must be a positive number", http.StatusBadRequest)
+                return
+            }
+            startTime, err := time.Parse(time.RFC3339, startTimeStr)
+            if err != nil {
+                writeJSONError(w, fmt.Sprintf("Invalid start_time format. Use RFC3339. Error: %v", err), http.StatusBadRequest)
+                return
+            }
+            endTime, err := time.Parse(time.RFC3339, endTimeStr)
+            if err != nil {
+                writeJSONError(w, fmt.Sprintf("Invalid end_time format. Use RFC3339. Error: %v", err), http.StatusBadRequest)
+                return
+            }
+            if endTime.Before(startTime) {
+                writeJSONError(w, "end_time must be after start_time", http.StatusBadRequest)
+                return
+            }
+
+            // 2. Ambil koordinat dari lost_report
+            lostReport, err := database.GetLostReportWithVehicleInfoByID(r.Context(), db, lostID)
+            if err != nil {
+                if err.Error() == "lost_report not found" {
+                    writeJSONError(w, fmt.Sprintf("lost report with id %d not found", lostID), http.StatusNotFound)
+                } else {
+                    writeJSONError(w, "failed to retrieve lost report data", http.StatusInternalServerError)
+                }
+                return
+            }
+            if lostReport.Latitude == nil || lostReport.Longitude == nil {
+                writeJSONError(w, fmt.Sprintf("lost report with id %d does not have location data", lostID), http.StatusBadRequest)
+                return
+            }
+
+            // 3. Panggil fungsi database yang baru
+            detectedListDB, err := database.ListDetectedByProximityAndTimestamp(r.Context(), db, *lostReport.Latitude, *lostReport.Longitude, radiusKm, startTime, endTime)
+            if err != nil {
+                fmt.Printf("ERROR: Failed to list detected by proximity and time: %v\n", err)
+                writeJSONError(w, "Failed to retrieve detected records with combined filter", http.StatusInternalServerError)
+                return
+            }
+
+            // 4. Kirim respons
+            responseList := make([]DetectedResponse, 0, len(detectedListDB))
+            for i := range detectedListDB {
+                responseList = append(responseList, s.toDetectedResponse(r.Context(), db, &detectedListDB[i]))
+            }
+            json.NewEncoder(w).Encode(responseList)
+            return
+        }
+
+        // Prioritas 3: Filter berdasarkan rentang waktu saja
         if startTimeStr != "" && endTimeStr != "" {
             layout := time.RFC3339
             startTime, err := time.Parse(layout, startTimeStr)
@@ -293,6 +357,46 @@ func (s *Server) handleGetDetected() http.HandlerFunc {
             return
         }
 
+        // Prioritas 4: Filter berdasarkan jarak saja (menggunakan lat/lon manual)
+        if latStr != "" && lonStr != "" && radiusStr != "" {
+            lat, err := strconv.ParseFloat(latStr, 64)
+            if err != nil {
+                writeJSONError(w, "invalid lat: must be a number", http.StatusBadRequest)
+                return
+            }
+            lon, err := strconv.ParseFloat(lonStr, 64)
+            if err != nil {
+                writeJSONError(w, "invalid lon: must be a number", http.StatusBadRequest)
+                return
+            }
+            radiusKm, err := strconv.ParseFloat(radiusStr, 64)
+            if err != nil || radiusKm <= 0 {
+                writeJSONError(w, "invalid radius_km: must be a positive number", http.StatusBadRequest)
+                return
+            }
+            if lat < -90 || lat > 90 {
+                writeJSONError(w, "lat must be between -90 and 90", http.StatusBadRequest)
+                return
+            }
+            if lon < -180 || lon > 180 {
+                writeJSONError(w, "lon must be between -180 and 180", http.StatusBadRequest)
+                return
+            }
+            detectedListDB, err := database.ListDetectedByCoordinates(r.Context(), db, lat, lon, radiusKm)
+            if err != nil {
+                fmt.Printf("ERROR: Failed to list detected by proximity (lat: %f, lon: %f, radius: %fkm): %v\n", lat, lon, radiusKm, err)
+                writeJSONError(w, "Failed to retrieve detected records by proximity", http.StatusInternalServerError)
+                return
+            }
+            responseList := make([]DetectedResponse, 0, len(detectedListDB))
+            for i := range detectedListDB {
+                responseList = append(responseList, s.toDetectedResponse(r.Context(), db, &detectedListDB[i]))
+            }
+            json.NewEncoder(w).Encode(responseList)
+            return
+        }
+
+        // Fallback: List semua data jika tidak ada filter yang cocok
         detectedListDB, err := database.ListDetected(r.Context(), db)
         if err != nil {
             fmt.Printf("ERROR: Failed to list all detected records: %v\n", err)
@@ -326,7 +430,7 @@ func (s *Server) handleUpdateDetected() http.HandlerFunc {
         // Untuk update, jika ingin mengubah gambar, prosesnya akan lebih kompleks.
         // Handler ini akan mengupdate field non-file dan ID gambar jika disediakan.
         // Jika ID gambar di-set null atau 0 di request, maka akan di-set null di DB.
-        // Jika ID gambar baru disediakan, pastikan gambar tersebut sudah ada.
+        // Jika ID gambar baru disediakan, pastikan gambar tersebut sudah ada di tabel images.
         // Atau, jika ingin upload gambar baru saat update, perlu logika ParseMultipartForm dan processImageUpload.
         // Untuk kesederhanaan, kita asumsikan ID gambar yang valid (jika ada) sudah ada di tabel images.
 

@@ -72,6 +72,86 @@ func ListDetectedByTimestampRange(ctx context.Context, db *sql.DB, startTime, en
 	return detectedList, nil
 }
 
+// ListDetectedByCoordinates mengambil daftar deteksi dari kamera yang berada dalam radius tertentu (dalam kilometer)
+// dari sebuah titik koordinat yang diberikan.
+func ListDetectedByCoordinates(ctx context.Context, db *sql.DB, lat, lon, radiusKm float64) ([]Detected, error) {
+	// Query ini menggunakan rumus Haversine untuk menghitung jarak antara dua titik di permukaan bola.
+	// 6371 adalah radius rata-rata Bumi dalam kilometer.
+	query := `
+        SELECT d.detected_id, d.camera_id, d.person_image_id, d.motorcycle_image_id, d.timestamp
+        FROM detected d
+        JOIN cameras c ON d.camera_id = c.camera_id
+        WHERE (
+            6371 * acos(
+                cos(radians($1)) * cos(radians(c.latitude)) *
+                cos(radians(c.longitude) - radians($2)) +
+                sin(radians($1)) * sin(radians(c.latitude))
+            )
+        ) <= $3
+        ORDER BY d.timestamp DESC;
+    `
+
+	rows, err := db.QueryContext(ctx, query, lat, lon, radiusKm)
+	if err != nil {
+		return nil, fmt.Errorf("error querying detected by coordinates: %w", err)
+	}
+	defer rows.Close()
+
+	var detectedList []Detected
+	for rows.Next() {
+		var d Detected
+		if err := rows.Scan(&d.DetectedID, &d.CameraID, &d.PersonImageID, &d.MotorcycleImageID, &d.Timestamp); err != nil {
+			return nil, fmt.Errorf("error scanning detected record: %w", err)
+		}
+		detectedList = append(detectedList, d)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, fmt.Errorf("error after iterating detected rows: %w", err)
+	}
+	return detectedList, nil
+}
+
+// ListDetectedByProximityAndTimestamp mengambil daftar deteksi dalam radius dari sebuah titik koordinat DAN dalam rentang waktu tertentu.
+func ListDetectedByProximityAndTimestamp(ctx context.Context, db *sql.DB, lat, lon, radiusKm float64, startTime, endTime time.Time) ([]Detected, error) {
+	// Query ini menggabungkan rumus Haversine untuk jarak dengan filter rentang waktu.
+	// 6371 adalah radius rata-rata Bumi dalam kilometer.
+	query := `
+        SELECT d.detected_id, d.camera_id, d.person_image_id, d.motorcycle_image_id, d.timestamp
+        FROM detected d
+        JOIN cameras c ON d.camera_id = c.camera_id
+        WHERE 
+            d.timestamp BETWEEN $1 AND $2
+            AND
+            (
+                6371 * acos(
+                    cos(radians($3)) * cos(radians(c.latitude)) *
+                    cos(radians(c.longitude) - radians($4)) +
+                    sin(radians($3)) * sin(radians(c.latitude))
+                )
+            ) <= $5
+        ORDER BY d.timestamp DESC;
+    `
+
+	rows, err := db.QueryContext(ctx, query, startTime, endTime, lat, lon, radiusKm)
+	if err != nil {
+		return nil, fmt.Errorf("error querying detected by proximity and timestamp: %w", err)
+	}
+	defer rows.Close()
+
+	var detectedList []Detected
+	for rows.Next() {
+		var d Detected
+		if err := rows.Scan(&d.DetectedID, &d.CameraID, &d.PersonImageID, &d.MotorcycleImageID, &d.Timestamp); err != nil {
+			return nil, fmt.Errorf("error scanning detected record: %w", err)
+		}
+		detectedList = append(detectedList, d)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, fmt.Errorf("error after iterating detected rows: %w", err)
+	}
+	return detectedList, nil
+}
+
 // ListDetected retrieves all detected records (fungsi asli bisa tetap ada)
 func ListDetected(ctx context.Context, db *sql.DB) ([]Detected, error) {
 	query := `SELECT detected_id, camera_id, person_image_id, motorcycle_image_id, timestamp 
