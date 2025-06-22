@@ -7,25 +7,26 @@ import (
 )
 
 type Camera struct {
-    CameraID   int    `json:"camera_id"` // serial
-    Name       string `json:"name"`
-    IPCamera   string `json:"ip_camera"`
-    Location   string `json:"location"`
-    Address    string `json:"address"`
-    IsActive   bool   `json:"is_active"`
+    CameraID  int64   `json:"camera_id"` // serial
+    Name      string  `json:"name"`
+    IPCamera  string  `json:"ip_camera"`
+    Latitude  float64 `json:"latitude"`   // Perubahan dari location
+    Longitude float64 `json:"longitude"`  // Perubahan dari location
+    Address   string  `json:"address"`
+    IsActive  bool    `json:"is_active"`
 }
 
 func CreateCamera(ctx context.Context, db *sql.DB, c *Camera) error {
-    query := `INSERT INTO cameras (name, ip_camera, location, address, is_active)
-              VALUES ($1, $2, $3, $4, $5) RETURNING camera_id`
-    return db.QueryRowContext(ctx, query, c.Name, c.IPCamera, c.Location, c.Address, c.IsActive).Scan(&c.CameraID)
+    query := `INSERT INTO cameras (name, ip_camera, latitude, longitude, address, is_active)
+              VALUES ($1, $2, $3, $4, $5, $6) RETURNING camera_id`
+    return db.QueryRowContext(ctx, query, c.Name, c.IPCamera, c.Latitude, c.Longitude, c.Address, c.IsActive).Scan(&c.CameraID)
 }
 
 func GetCameraByID(ctx context.Context, db *sql.DB, id int64) (*Camera, error) {
     var cam Camera
-    query := `SELECT camera_id, name, ip_camera, location, address, is_active FROM cameras WHERE camera_id = $1`
+    query := `SELECT camera_id, name, ip_camera, latitude, longitude, address, is_active FROM cameras WHERE camera_id = $1`
     err := db.QueryRowContext(ctx, query, id).Scan(
-        &cam.CameraID, &cam.Name, &cam.IPCamera, &cam.Location, &cam.Address, &cam.IsActive,
+        &cam.CameraID, &cam.Name, &cam.IPCamera, &cam.Latitude, &cam.Longitude, &cam.Address, &cam.IsActive,
     )
     if err != nil {
         if err == sql.ErrNoRows {
@@ -37,7 +38,7 @@ func GetCameraByID(ctx context.Context, db *sql.DB, id int64) (*Camera, error) {
 }
 
 func ListCameras(ctx context.Context, db *sql.DB) ([]Camera, error) {
-    query := `SELECT camera_id, name, ip_camera, location, address, is_active FROM cameras`
+    query := `SELECT camera_id, name, ip_camera, latitude, longitude, address, is_active FROM cameras ORDER BY name`
     rows, err := db.QueryContext(ctx, query)
     if err != nil {
         return nil, err
@@ -47,7 +48,7 @@ func ListCameras(ctx context.Context, db *sql.DB) ([]Camera, error) {
     var list []Camera
     for rows.Next() {
         var cam Camera
-        if err := rows.Scan(&cam.CameraID, &cam.Name, &cam.IPCamera, &cam.Location, &cam.Address, &cam.IsActive); err != nil {
+        if err := rows.Scan(&cam.CameraID, &cam.Name, &cam.IPCamera, &cam.Latitude, &cam.Longitude, &cam.Address, &cam.IsActive); err != nil {
             return nil, err
         }
         list = append(list, cam)
@@ -56,8 +57,8 @@ func ListCameras(ctx context.Context, db *sql.DB) ([]Camera, error) {
 }
 
 func UpdateCamera(ctx context.Context, db *sql.DB, id int64, c *Camera) error {
-    query := `UPDATE cameras SET name=$1, ip_camera=$2, location=$3, address=$4, is_active=$5 WHERE camera_id=$6`
-    res, err := db.ExecContext(ctx, query, c.Name, c.IPCamera, c.Location, c.Address, c.IsActive, id)
+    query := `UPDATE cameras SET name=$1, ip_camera=$2, latitude=$3, longitude=$4, address=$5, is_active=$6 WHERE camera_id=$7`
+    res, err := db.ExecContext(ctx, query, c.Name, c.IPCamera, c.Latitude, c.Longitude, c.Address, c.IsActive, id)
     if err != nil {
         return err
     }
