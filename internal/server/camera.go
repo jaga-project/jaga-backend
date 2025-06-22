@@ -17,9 +17,38 @@ func (s *Server) handleCreateCamera() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var cam database.Camera
 		if err := json.NewDecoder(r.Body).Decode(&cam); err != nil {
-			writeJSONError(w, "Invalid request payload: "+err.Error(), http.StatusBadRequest)
+			// Error ini sekarang lebih spesifik untuk format JSON yang salah
+			writeJSONError(w, "Invalid JSON format: "+err.Error(), http.StatusBadRequest)
 			return
 		}
+
+		// --- Validasi Input ---
+		validationErrors := make(map[string]string)
+		if strings.TrimSpace(cam.Name) == "" {
+			validationErrors["name"] = "Name field is required and cannot be empty."
+		}
+		if strings.TrimSpace(cam.IPCamera) == "" {
+			validationErrors["ip_camera"] = "IP Camera field is required and cannot be empty."
+		}
+		// Validasi jangkauan untuk koordinat geografis
+		if cam.Latitude < -90 || cam.Latitude > 90 {
+			validationErrors["latitude"] = "Latitude must be between -90 and 90."
+		}
+		if cam.Longitude < -180 || cam.Longitude > 180 {
+			validationErrors["longitude"] = "Longitude must be between -180 and 180."
+		}
+
+		if len(validationErrors) > 0 {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"error":   "Validation failed",
+				"details": validationErrors,
+			})
+			return
+		}
+		// --- Akhir Validasi Input ---
+
 		if err := database.CreateCamera(r.Context(), s.db.Get(), &cam); err != nil {
 			writeJSONError(w, "Failed to create camera: "+err.Error(), http.StatusInternalServerError)
 			return
@@ -76,9 +105,36 @@ func (s *Server) handleUpdateCamera() http.HandlerFunc {
 		}
 		var cam database.Camera
 		if err := json.NewDecoder(r.Body).Decode(&cam); err != nil {
-			writeJSONError(w, "Invalid request payload: "+err.Error(), http.StatusBadRequest)
+			writeJSONError(w, "Invalid JSON format: "+err.Error(), http.StatusBadRequest)
 			return
 		}
+
+		// --- Validasi Input ---
+		validationErrors := make(map[string]string)
+		if strings.TrimSpace(cam.Name) == "" {
+			validationErrors["name"] = "Name field is required and cannot be empty."
+		}
+		if strings.TrimSpace(cam.IPCamera) == "" {
+			validationErrors["ip_camera"] = "IP Camera field is required and cannot be empty."
+		}
+		if cam.Latitude < -90 || cam.Latitude > 90 {
+			validationErrors["latitude"] = "Latitude must be between -90 and 90."
+		}
+		if cam.Longitude < -180 || cam.Longitude > 180 {
+			validationErrors["longitude"] = "Longitude must be between -180 and 180."
+		}
+
+		if len(validationErrors) > 0 {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"error":   "Validation failed",
+				"details": validationErrors,
+			})
+			return
+		}
+		// --- Akhir Validasi Input ---
+
 		if err := database.UpdateCamera(r.Context(), s.db.Get(), id, &cam); err != nil {
 			writeJSONError(w, "Failed to update camera: "+err.Error(), http.StatusInternalServerError)
 			return
