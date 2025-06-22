@@ -20,7 +20,7 @@ type Suspect struct {
 
 type SuspectResult struct {
     SuspectID         int64
-    MatchScore        float64
+    Score        float64
     DetectedTimestamp time.Time
     // Dari tabel 'images'
     EvidenceImagePath sql.NullString
@@ -36,7 +36,7 @@ func GetSuspectsByLostReportID(ctx context.Context, db *sql.DB, lostReportID int
     query := `
         SELECT 
             s.suspect_id,
-            s.match_score,
+            s.score,
             d.timestamp,
             img.storage_path,
             c.camera_id,
@@ -45,11 +45,11 @@ func GetSuspectsByLostReportID(ctx context.Context, db *sql.DB, lostReportID int
             c.longitude
         FROM suspect s
         JOIN detected d ON s.detected_id = d.detected_id
-        JOIN camera c ON d.camera_id = c.camera_id
+        JOIN cameras c ON d.camera_id = c.camera_id
         -- Menggunakan LEFT JOIN untuk gambar, agar jika gambar tidak ada, data tetap muncul
         LEFT JOIN images img ON d.person_image_id = img.image_id
-        WHERE s.lost_report_id = $1
-        ORDER BY s.match_score DESC;
+        WHERE s.lost_id = $1
+        ORDER BY s.score DESC;
     `
 
     rows, err := db.QueryContext(ctx, query, lostReportID)
@@ -63,7 +63,7 @@ func GetSuspectsByLostReportID(ctx context.Context, db *sql.DB, lostReportID int
         var res SuspectResult
         if err := rows.Scan(
             &res.SuspectID,
-            &res.MatchScore,
+            &res.Score,
             &res.DetectedTimestamp,
             &res.EvidenceImagePath,
             &res.CameraID,

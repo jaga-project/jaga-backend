@@ -139,8 +139,6 @@ func processImageUpload(r *http.Request, formFieldName string, tx *sql.Tx) (sql.
 
 func (s *Server) handleCreateDetected() http.HandlerFunc {
     return func(w http.ResponseWriter, r *http.Request) {
-        // Ganti http.Error dengan writeJSONError jika Anda sudah mengimplementasikannya secara global
-        // Untuk saat ini, saya biarkan http.Error agar fokus pada perubahan get
         fmt.Println("DEBUG: handleCreateDetected POST request received")
         if err := r.ParseMultipartForm(20 << 20); err != nil {
             writeJSONError(w, "Request too large or invalid multipart form: "+err.Error(), http.StatusBadRequest)

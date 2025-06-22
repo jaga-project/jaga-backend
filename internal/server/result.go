@@ -24,7 +24,7 @@ type SuspectInfo struct {
     SuspectID         int64            `json:"suspect_id"`
     EvidenceImageURL  *string          `json:"evidence_image_url,omitempty"`
     TimestampDetected time.Time        `json:"timestamp_detected"`
-    MatchScore        float64          `json:"match_score"`
+    Score        float64          `json:"score"`
     Camera            CameraInfoResult `json:"camera"`
 }
 
@@ -82,7 +82,7 @@ func (s *Server) handleGetResultByLostReportID() http.HandlerFunc {
                 suspectInfo := SuspectInfo{
                     SuspectID:         dbSuspect.SuspectID,
                     TimestampDetected: dbSuspect.DetectedTimestamp,
-                    MatchScore:        dbSuspect.MatchScore,
+                    Score:              dbSuspect.Score,
                     Camera: CameraInfoResult{
                         CameraID:  dbSuspect.CameraID,
                         Name:      dbSuspect.CameraName,
