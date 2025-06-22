@@ -172,8 +172,8 @@ func (s *Server) RegisterCameraRoutes(r *mux.Router) {
 	adminOnlyMiddleware := middleware.AdminOnlyMiddleware()
 
 	r.Handle("/cameras", adminOnlyMiddleware(s.handleCreateCamera())).Methods("POST")
-	r.Handle("/cameras", adminOnlyMiddleware(s.handleListCameras())).Methods("GET")
-	r.Handle("/cameras/{id:[0-9]+}", adminOnlyMiddleware(s.handleGetCameraByID())).Methods("GET")
+	r.HandleFunc("/cameras", s.handleListCameras()).Methods("GET")
+	r.HandleFunc("/cameras/{id:[0-9]+}", s.handleGetCameraByID()).Methods("GET")
 	r.Handle("/cameras/{id:[0-9]+}", adminOnlyMiddleware(s.handleUpdateCamera())).Methods("PUT")
 	r.Handle("/cameras/{id:[0-9]+}", adminOnlyMiddleware(s.handleDeleteCamera())).Methods("DELETE")
 }
