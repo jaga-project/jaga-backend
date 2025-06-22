@@ -61,6 +61,7 @@ func (s *Server) RegisterRoutes() http.Handler {
 	s.RegisterLostReportRoutes(apiRouter)    
 	s.RegisterSuspectRoutes(apiRouter)       
 	s.RegisterImageRoutes(apiRouter) 
+	s.RegisterResultRoutes(apiRouter)
 
 	return mainRouter
 }
