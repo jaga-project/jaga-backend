@@ -21,9 +21,11 @@ type LostReport struct {
 	Timestamp             time.Time `json:"timestamp"`
 	VehicleID             int       `json:"vehicle_id"`
 	Address               string    `json:"address"`
+	Latitude              *float64  `json:"latitude,omitempty"`  // Ditambahkan
+	Longitude             *float64  `json:"longitude,omitempty"` // Ditambahkan
 	Status                string    `json:"status"`
-	MotorEvidenceImageID  *int64    `json:"motor_evidence_image_id,omitempty"`  // Pointer agar bisa null
-	PersonEvidenceImageID *int64    `json:"person_evidence_image_id,omitempty"` // Pointer agar bisa null
+	MotorEvidenceImageID  *int64    `json:"motor_evidence_image_id,omitempty"`
+	PersonEvidenceImageID *int64    `json:"person_evidence_image_id,omitempty"`
 }
 
 // LostReportWithVehicleInfo adalah struct yang menggabungkan LostReport dengan info ringkas Vehicle.
@@ -33,6 +35,8 @@ type LostReportWithVehicleInfo struct {
 	Timestamp             time.Time `json:"timestamp"`
 	VehicleID             int       `json:"vehicle_id"`
 	Address               string    `json:"address"`
+	Latitude              *float64  `json:"latitude,omitempty"`  // Ditambahkan
+	Longitude             *float64  `json:"longitude,omitempty"` // Ditambahkan
 	Status                string    `json:"status"`
 	MotorEvidenceImageID  *int64    `json:"motor_evidence_image_id,omitempty"`
 	PersonEvidenceImageID *int64    `json:"person_evidence_image_id,omitempty"`
@@ -43,9 +47,9 @@ type LostReportWithVehicleInfo struct {
 }
 
 func CreateLostReportTx(ctx context.Context, tx *sql.Tx, lr *LostReport) error {
-	query := `INSERT INTO lost_report (user_id, timestamp, vehicle_id, address, status, motor_evidence_image_id, person_evidence_image_id)
-              VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING lost_id`
-	err := tx.QueryRowContext(ctx, query, lr.UserID, lr.Timestamp, lr.VehicleID, lr.Address, lr.Status, lr.MotorEvidenceImageID, lr.PersonEvidenceImageID).Scan(&lr.LostID)
+	query := `INSERT INTO lost_report (user_id, timestamp, vehicle_id, address, latitude, longitude, status, motor_evidence_image_id, person_evidence_image_id)
+              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING lost_id`
+	err := tx.QueryRowContext(ctx, query, lr.UserID, lr.Timestamp, lr.VehicleID, lr.Address, lr.Latitude, lr.Longitude, lr.Status, lr.MotorEvidenceImageID, lr.PersonEvidenceImageID).Scan(&lr.LostID)
 	if err != nil {
 		return fmt.Errorf("error creating lost report in tx: %w", err)
 	}
@@ -73,7 +77,7 @@ func GetLostReportWithVehicleInfoByID(ctx context.Context, db *sql.DB, id int) (
 	var lr LostReportWithVehicleInfo
 	query := `
         SELECT 
-            lr.lost_id, lr.user_id, lr.timestamp, lr.vehicle_id, lr.address, lr.status, 
+            lr.lost_id, lr.user_id, lr.timestamp, lr.vehicle_id, lr.address, lr.latitude, lr.longitude, lr.status, 
             lr.motor_evidence_image_id, lr.person_evidence_image_id,
             v.vehicle_name, v.plate_number
         FROM lost_report lr
@@ -81,7 +85,7 @@ func GetLostReportWithVehicleInfoByID(ctx context.Context, db *sql.DB, id int) (
         WHERE lr.lost_id = $1`
 
 	err := db.QueryRowContext(ctx, query, id).Scan(
-		&lr.LostID, &lr.UserID, &lr.Timestamp, &lr.VehicleID, &lr.Address, &lr.Status,
+		&lr.LostID, &lr.UserID, &lr.Timestamp, &lr.VehicleID, &lr.Address, &lr.Latitude, &lr.Longitude, &lr.Status,
 		&lr.MotorEvidenceImageID, &lr.PersonEvidenceImageID,
 		&lr.VehicleName, &lr.PlateNumber,
 	)
@@ -133,7 +137,7 @@ func ListLostReportsWithVehicleInfo(ctx context.Context, db *sql.DB, statusFilte
 	var queryBuilder strings.Builder
 	queryBuilder.WriteString(`
         SELECT 
-            lr.lost_id, lr.user_id, lr.timestamp, lr.vehicle_id, lr.address, lr.status, 
+            lr.lost_id, lr.user_id, lr.timestamp, lr.vehicle_id, lr.address, lr.latitude, lr.longitude, lr.status, 
             lr.motor_evidence_image_id, lr.person_evidence_image_id,
             v.vehicle_name, v.plate_number
         FROM lost_report lr
@@ -156,7 +160,7 @@ func ListLostReportsWithVehicleInfo(ctx context.Context, db *sql.DB, statusFilte
 	for rows.Next() {
 		var lr LostReportWithVehicleInfo
 		if errScan := rows.Scan(
-			&lr.LostID, &lr.UserID, &lr.Timestamp, &lr.VehicleID, &lr.Address, &lr.Status,
+			&lr.LostID, &lr.UserID, &lr.Timestamp, &lr.VehicleID, &lr.Address, &lr.Latitude, &lr.Longitude, &lr.Status,
 			&lr.MotorEvidenceImageID, &lr.PersonEvidenceImageID,
 			&lr.VehicleName, &lr.PlateNumber,
 		); errScan != nil {
@@ -173,7 +177,7 @@ func ListLostReportsWithVehicleInfo(ctx context.Context, db *sql.DB, statusFilte
 func ListLostReportsWithVehicleInfoByUserID(ctx context.Context, db *sql.DB, userID string) ([]LostReportWithVehicleInfo, error) {
     query := `
         SELECT 
-            lr.lost_id, lr.user_id, lr.timestamp, lr.vehicle_id, lr.address, lr.status, 
+            lr.lost_id, lr.user_id, lr.timestamp, lr.vehicle_id, lr.address, lr.latitude, lr.longitude, lr.status, 
             lr.motor_evidence_image_id, lr.person_evidence_image_id,
             v.vehicle_name, v.plate_number
         FROM lost_report lr
@@ -191,7 +195,7 @@ func ListLostReportsWithVehicleInfoByUserID(ctx context.Context, db *sql.DB, use
     for rows.Next() {
         var lr LostReportWithVehicleInfo
         if errScan := rows.Scan(
-            &lr.LostID, &lr.UserID, &lr.Timestamp, &lr.VehicleID, &lr.Address, &lr.Status,
+            &lr.LostID, &lr.UserID, &lr.Timestamp, &lr.VehicleID, &lr.Address, &lr.Latitude, &lr.Longitude, &lr.Status,
             &lr.MotorEvidenceImageID, &lr.PersonEvidenceImageID,
             &lr.VehicleName, &lr.PlateNumber,
         ); errScan != nil {
@@ -237,11 +241,13 @@ func UpdateLostReport(ctx context.Context, db *sql.DB, id int, lr *LostReport) e
                 timestamp=$2, 
                 vehicle_id=$3, 
                 address=$4, 
-                status=$5, 
-                motor_evidence_image_id=$6, 
-                person_evidence_image_id=$7 
-              WHERE lost_id=$8`
-	res, err := db.ExecContext(ctx, query, lr.UserID, lr.Timestamp, lr.VehicleID, lr.Address, lr.Status, lr.MotorEvidenceImageID, lr.PersonEvidenceImageID, id)
+                latitude=$5, 
+                longitude=$6, 
+                status=$7, 
+                motor_evidence_image_id=$8, 
+                person_evidence_image_id=$9 
+              WHERE lost_id=$10`
+	res, err := db.ExecContext(ctx, query, lr.UserID, lr.Timestamp, lr.VehicleID, lr.Address, lr.Latitude, lr.Longitude, lr.Status, lr.MotorEvidenceImageID, lr.PersonEvidenceImageID, id)
 	if err != nil {
 		return fmt.Errorf("error updating lost report ID %d: %w", id, err)
 	}

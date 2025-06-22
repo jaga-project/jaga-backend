@@ -33,6 +33,8 @@ type LostReportResponse struct {
     Timestamp              time.Time    `json:"timestamp"`
     VehicleID              int          `json:"vehicle_id"`
     Address                string       `json:"address"`
+    Latitude               *float64     `json:"latitude,omitempty"`  // Ditambahkan
+    Longitude              *float64     `json:"longitude,omitempty"` // Ditambahkan
     Status                 string       `json:"status"`
     MotorEvidenceImageURL  *string      `json:"motor_evidence_image_url,omitempty"`
     PersonEvidenceImageURL *string      `json:"person_evidence_image_url,omitempty"`
@@ -47,6 +49,8 @@ func (s *Server) toLostReportResponse(ctx context.Context, dbQuerier database.Qu
         Timestamp: lr.Timestamp,
         VehicleID: lr.VehicleID,
         Address:   lr.Address,
+        Latitude:  lr.Latitude,  // Ditambahkan
+        Longitude: lr.Longitude, // Ditambahkan
         Status:    lr.Status,
     }
 
@@ -133,6 +137,35 @@ func (s *Server) handleCreateLostReport() http.HandlerFunc {
             writeJSONError(w, "address is required", http.StatusBadRequest)
             return
         }
+
+        // --- Validasi Latitude & Longitude ---
+        latStr := r.FormValue("latitude")
+        lonStr := r.FormValue("longitude")
+
+        if latStr != "" && lonStr != "" {
+            lat, errLat := strconv.ParseFloat(latStr, 64)
+            lon, errLon := strconv.ParseFloat(lonStr, 64)
+
+            if errLat != nil || errLon != nil {
+                writeJSONError(w, "Invalid format for latitude or longitude. They must be numbers.", http.StatusBadRequest)
+                return
+            }
+            if lat < -90 || lat > 90 {
+                writeJSONError(w, "Latitude must be between -90 and 90.", http.StatusBadRequest)
+                return
+            }
+            if lon < -180 || lon > 180 {
+                writeJSONError(w, "Longitude must be between -180 and 180.", http.StatusBadRequest)
+                return
+            }
+            lr.Latitude = &lat
+            lr.Longitude = &lon
+        } else if latStr != "" || lonStr != "" {
+            // Jika hanya salah satu yang diisi
+            writeJSONError(w, "Both latitude and longitude must be provided together.", http.StatusBadRequest)
+            return
+        }
+        // --- Akhir Validasi ---
 
         statusStr := r.FormValue("status")
         if statusStr != "" {
@@ -407,10 +440,12 @@ func (s *Server) handleUpdateLostReport() http.HandlerFunc {
         }
 
         var updates struct {
-            Timestamp *string `json:"timestamp"`
-            Address   *string `json:"address"`
-            VehicleID *int    `json:"vehicle_id"`
-            Status    *string `json:"status"`
+            Timestamp *string  `json:"timestamp"`
+            Address   *string  `json:"address"`
+            VehicleID *int     `json:"vehicle_id"`
+            Status    *string  `json:"status"`
+            Latitude  *float64 `json:"latitude"`  // Ditambahkan
+            Longitude *float64 `json:"longitude"` // Ditambahkan
         }
 
         if err := json.NewDecoder(r.Body).Decode(&updates); err != nil {
@@ -443,6 +478,8 @@ func (s *Server) handleUpdateLostReport() http.HandlerFunc {
             Timestamp:             existingLR.Timestamp,
             VehicleID:             existingLR.VehicleID,
             Address:               existingLR.Address,
+            Latitude:              existingLR.Latitude,  // Ditambahkan
+            Longitude:             existingLR.Longitude, // Ditambahkan
             Status:                existingLR.Status,
             MotorEvidenceImageID:  existingLR.MotorEvidenceImageID,
             PersonEvidenceImageID: existingLR.PersonEvidenceImageID,
@@ -492,6 +529,22 @@ func (s *Server) handleUpdateLostReport() http.HandlerFunc {
             if updates.VehicleID != nil && reportToUpdate.VehicleID != *updates.VehicleID {
                 reportToUpdate.VehicleID = *updates.VehicleID
                 anythingChanged = true
+            }
+            if updates.Latitude != nil && updates.Longitude != nil {
+                if *updates.Latitude < -90 || *updates.Latitude > 90 {
+                    writeJSONError(w, "Latitude must be between -90 and 90.", http.StatusBadRequest)
+                    return
+                }
+                if *updates.Longitude < -180 || *updates.Longitude > 180 {
+                    writeJSONError(w, "Longitude must be between -180 and 180.", http.StatusBadRequest)
+                    return
+                }
+                reportToUpdate.Latitude = updates.Latitude
+                reportToUpdate.Longitude = updates.Longitude
+                anythingChanged = true
+            } else if updates.Latitude != nil || updates.Longitude != nil {
+                writeJSONError(w, "Both latitude and longitude must be provided together for an update.", http.StatusBadRequest)
+                return
             }
         }
 
@@ -558,7 +611,7 @@ func (s *Server) handleDeleteLostReport() http.HandlerFunc {
     }
 }
 
-// RegisterLostReportRoutes mendaftarkan semua rute terkait lost_report.
+// Regis rute lost report
 func (s *Server) RegisterLostReportRoutes(r *mux.Router) {
 
     adminOnlyMiddleware := middleware.AdminOnlyMiddleware()
