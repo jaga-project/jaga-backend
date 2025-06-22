@@ -14,7 +14,6 @@ import (
 	"strings" // Ditambahkan untuk toDetectedResponse
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/gorilla/mux"
 	"github.com/jaga-project/jaga-backend/internal/database"
 )
@@ -60,13 +59,6 @@ func (s *Server) toDetectedResponse(ctx context.Context, dbQuerier database.Quer
     return response
 }
 
-// generateUniqueFilenameLocalDetected dapat tetap spesifik jika diperlukan,
-// atau Anda bisa menggunakan generateUniqueFilenameLocal dari image.go jika logikanya sama.
-func generateUniqueFilenameLocalDetected(originalFilename string) string {
-    randomUUID := uuid.New().String()
-    extension := filepath.Ext(originalFilename)
-    return fmt.Sprintf("%s%s", randomUUID, extension)
-}
 
 func processImageUpload(r *http.Request, formFieldName string, tx *sql.Tx) (sql.NullInt64, string, error) {
     file, handler, err := r.FormFile(formFieldName)
@@ -96,7 +88,7 @@ func processImageUpload(r *http.Request, formFieldName string, tx *sql.Tx) (sql.
     }
 
     originalFilename := handler.Filename
-    uniqueFilename := generateUniqueFilenameLocalDetected(originalFilename)
+    uniqueFilename := generateUniqueFilenameLocal(originalFilename)
     storageDir := imageUploadPath
     storagePath := filepath.Join(storageDir, uniqueFilename)
 
