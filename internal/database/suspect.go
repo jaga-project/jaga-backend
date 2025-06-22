@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"errors"
 	"time"
+
+    "fmt"
 )
 
 type Suspect struct {
@@ -14,6 +16,71 @@ type Suspect struct {
     Score      float64   `json:"score"`
     Rank       int       `json:"rank"`
     CreatedAt  time.Time `json:"created_at"`
+}
+
+type SuspectResult struct {
+    SuspectID         int64
+    MatchScore        float64
+    DetectedTimestamp time.Time
+    // Dari tabel 'images'
+    EvidenceImagePath sql.NullString
+    // Dari tabel 'camera'
+    CameraID        int64
+    CameraName      string
+    CameraLatitude  float64
+    CameraLongitude float64
+}
+
+// GetSuspectsByLostReportID mengambil semua data suspect yang terkait dengan satu lost_report.
+func GetSuspectsByLostReportID(ctx context.Context, db *sql.DB, lostReportID int) ([]SuspectResult, error) {
+    query := `
+        SELECT 
+            s.suspect_id,
+            s.match_score,
+            d.timestamp,
+            img.storage_path,
+            c.camera_id,
+            c.name,
+            c.latitude,
+            c.longitude
+        FROM suspect s
+        JOIN detected d ON s.detected_id = d.detected_id
+        JOIN camera c ON d.camera_id = c.camera_id
+        -- Menggunakan LEFT JOIN untuk gambar, agar jika gambar tidak ada, data tetap muncul
+        LEFT JOIN images img ON d.person_image_id = img.image_id
+        WHERE s.lost_report_id = $1
+        ORDER BY s.match_score DESC;
+    `
+
+    rows, err := db.QueryContext(ctx, query, lostReportID)
+    if err != nil {
+        return nil, fmt.Errorf("failed to query suspects for lost report id %d: %w", lostReportID, err)
+    }
+    defer rows.Close()
+
+    var results []SuspectResult
+    for rows.Next() {
+        var res SuspectResult
+        if err := rows.Scan(
+            &res.SuspectID,
+            &res.MatchScore,
+            &res.DetectedTimestamp,
+            &res.EvidenceImagePath,
+            &res.CameraID,
+            &res.CameraName,
+            &res.CameraLatitude,
+            &res.CameraLongitude,
+        ); err != nil {
+            return nil, fmt.Errorf("failed to scan suspect row: %w", err)
+        }
+        results = append(results, res)
+    }
+
+    if err = rows.Err(); err != nil {
+        return nil, fmt.Errorf("error after iterating suspect rows: %w", err)
+    }
+
+    return results, nil
 }
 
 func CreateSuspect(ctx context.Context, db *sql.DB, s *Suspect) error {
