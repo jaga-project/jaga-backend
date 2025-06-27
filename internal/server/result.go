@@ -1,15 +1,15 @@
 package server
 
 import (
-    "encoding/json"
-    "net/http"
-    "strconv"
-    "strings"
-    "time"
+	"encoding/json"
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
 
-    "github.com/gorilla/mux"
-    "github.com/jaga-project/jaga-backend/internal/database"
-    "github.com/jaga-project/jaga-backend/internal/middleware"
+	"github.com/gorilla/mux"
+	"github.com/jaga-project/jaga-backend/internal/database"
+	"github.com/jaga-project/jaga-backend/internal/middleware"
 )
 
 // Structs untuk respons JSON
@@ -24,7 +24,9 @@ type SuspectInfo struct {
     SuspectID         int64            `json:"suspect_id"`
     EvidenceImageURL  *string          `json:"evidence_image_url,omitempty"`
     TimestampDetected time.Time        `json:"timestamp_detected"`
-    Score        float64          `json:"score"`
+    PersonScore       float64          `json:"person_score"`
+    MotorScore        float64          `json:"motor_score"`
+    FinalScore        float64          `json:"final_score"`
     Camera            CameraInfoResult `json:"camera"`
 }
 
@@ -82,7 +84,9 @@ func (s *Server) handleGetResultByLostReportID() http.HandlerFunc {
                 suspectInfo := SuspectInfo{
                     SuspectID:         dbSuspect.SuspectID,
                     TimestampDetected: dbSuspect.DetectedTimestamp,
-                    Score:              dbSuspect.Score,
+                    PersonScore:       dbSuspect.PersonScore,
+                    MotorScore:        dbSuspect.MotorScore,
+                    FinalScore:        dbSuspect.FinalScore,
                     Camera: CameraInfoResult{
                         CameraID:  dbSuspect.CameraID,
                         Name:      dbSuspect.CameraName,
