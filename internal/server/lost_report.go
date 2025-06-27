@@ -115,10 +115,21 @@ func (s *Server) handleCreateLostReport() http.HandlerFunc {
                 writeJSONError(w, fmt.Sprintf("Invalid timestamp format. Use RFC3339. Error: %v", err), http.StatusBadRequest)
                 return
             }
-            if lr.Timestamp.After(time.Now().Add(5 * time.Minute)) {
-                writeJSONError(w, "timestamp (waktu kejadian) cannot be unreasonably in the future", http.StatusBadRequest)
-                return
-            }
+
+            // // --- DEBUGGING LOGS START ---
+            // serverTimeUTC := time.Now().UTC()
+            // fmt.Println("--- Create Lost Report: Timestamp Validation Debug ---")
+            // fmt.Printf("Client Timestamp (from form): %s\n", timestampStr)
+            // fmt.Printf("Parsed as UTC:                %s\n", lr.Timestamp.Format(time.RFC3339))
+            // fmt.Printf("Server Time (current UTC):      %s\n", serverTimeUTC.Format(time.RFC3339))
+            // fmt.Printf("Is Parsed Time in the future?   %t\n", lr.Timestamp.After(serverTimeUTC))
+            // fmt.Println("----------------------------------------------------")
+            // // --- DEBUGGING LOGS END ---
+
+            // if lr.Timestamp.After(time.Now().Add(1 * time.Minute)) {
+            //     writeJSONError(w, "timestamp (waktu kejadian) cannot be unreasonably in the future", http.StatusBadRequest)
+            //     return
+            // }
         }
 
         vehicleIDStr := r.FormValue("vehicle_id")
@@ -210,7 +221,12 @@ func (s *Server) handleCreateLostReport() http.HandlerFunc {
             imgIDResult, storagePath, errUpload := s.uploadAndCreateImageRecordLr(r.Context(), tx, motorFile, motorHandler, "motor_evidence_image")
             if errUpload != nil {
                 txErr = fmt.Errorf("failed to process motor_evidence_image: %w", errUpload)
-                writeJSONError(w, txErr.Error(), determineImageUploadErrorStatusCode(errUpload))
+                statusCode := http.StatusInternalServerError
+                errMsg := strings.ToLower(errUpload.Error())
+                if strings.Contains(errMsg, "file is empty") || strings.Contains(errMsg, "exceeds") || strings.Contains(errMsg, "invalid type") || strings.Contains(errMsg, "mime type validation failed") {
+                    statusCode = http.StatusBadRequest
+                }
+                writeJSONError(w, txErr.Error(), statusCode)
                 return
             }
             motorEvidenceImageStoragePath = storagePath
@@ -229,7 +245,12 @@ func (s *Server) handleCreateLostReport() http.HandlerFunc {
             imgIDResult, storagePath, errUpload := s.uploadAndCreateImageRecordLr(r.Context(), tx, personFile, personHandler, "person_evidence_image")
             if errUpload != nil {
                 txErr = fmt.Errorf("failed to process person_evidence_image: %w", errUpload)
-                writeJSONError(w, txErr.Error(), determineImageUploadErrorStatusCode(errUpload))
+                statusCode := http.StatusInternalServerError
+                errMsg := strings.ToLower(errUpload.Error())
+                if strings.Contains(errMsg, "file is empty") || strings.Contains(errMsg, "exceeds") || strings.Contains(errMsg, "invalid type") || strings.Contains(errMsg, "mime type validation failed") {
+                    statusCode = http.StatusBadRequest
+                }
+                writeJSONError(w, txErr.Error(), statusCode)
                 return
             }
             personEvidenceImageStoragePath = storagePath
@@ -513,7 +534,7 @@ func (s *Server) handleUpdateLostReport() http.HandlerFunc {
                     writeJSONError(w, "Invalid timestamp format. Use RFC3339.", http.StatusBadRequest)
                     return
                 }
-                if parsedTime.After(time.Now().Add(5 * time.Minute)) {
+                 if parsedTime.After(time.Now().UTC().Add(1 * time.Minute)) {
                     writeJSONError(w, "timestamp (waktu kejadian) cannot be unreasonably in the future", http.StatusBadRequest)
                     return
                 }
