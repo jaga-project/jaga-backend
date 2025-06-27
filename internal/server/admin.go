@@ -20,7 +20,7 @@ func (s *Server) handleCreateAdmin() http.HandlerFunc {
 			return
 		}
 
-		// Validasi sederhana
+		// Validasi 
 		if admin.UserID == "" {
 			writeJSONError(w, "user_id is required", http.StatusBadRequest)
 			return
@@ -29,7 +29,7 @@ func (s *Server) handleCreateAdmin() http.HandlerFunc {
 		admin.CreatedAt = time.Now()
 
 		if err := database.CreateAdmin(r.Context(), s.db.Get(), &admin); err != nil {
-			// Mungkin ada error karena duplikat user_id (unique constraint)
+			// Mungkin ada error karena duplikat user_id 
 			if strings.Contains(err.Error(), "duplicate key value violates unique constraint") {
 				writeJSONError(w, "This user is already an admin", http.StatusConflict)
 				return
@@ -113,7 +113,6 @@ func (s *Server) handleDeleteAdmin() http.HandlerFunc {
 	}
 }
 
-// RegisterAdminRoutes registers all admin-related routes
 func (s *Server) RegisterAdminRoutes(r *mux.Router) {
 	r.HandleFunc("", s.handleCreateAdmin()).Methods("POST")
 	r.HandleFunc("", s.handleGetAdmin()).Methods("GET")
