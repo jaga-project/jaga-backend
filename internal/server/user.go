@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"errors"
 
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
@@ -18,187 +19,140 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-// Fungsi helper untuk membuat nama file unik (menggantikan utils.GenerateUniqueFilename)
 func generateUniqueFilenameLocal(originalFilename string) string {
 	timestamp := time.Now().UnixNano()
 	randomUUID := uuid.New().String()
 	extension := filepath.Ext(originalFilename)
 	base := strings.TrimSuffix(originalFilename, extension)
-	// Membersihkan base name agar lebih aman untuk nama file
 	safeBase := strings.ReplaceAll(strings.ToLower(base), " ", "_")
-	if len(safeBase) > 50 { // Batasi panjang base name
+	if len(safeBase) > 50 { 
 		safeBase = safeBase[:50]
 	}
 	return fmt.Sprintf("%s_%d_%s%s", safeBase, timestamp, randomUUID, extension)
 }
 
 func (s *Server) handleCreateUser() http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		// Batasi ukuran keseluruhan request body (misalnya 10MB untuk multipart)
-		// Sesuaikan batas ukuran total form jika perlu, mirip dengan lost_report.go
-		// const maxKTPFileSize = 5 * 1024 * 1024 // 5MB untuk KTP
-		// const extraFormDataSizeUser = 1 * 1024 * 1024 // 1MB untuk field teks lainnya
-		// maxTotalUserFormSize := extraFormDataSizeUser + maxKTPFileSize
-		// if err := r.ParseMultipartForm(maxTotalUserFormSize); err != nil {
-		if err := r.ParseMultipartForm(10 << 20); err != nil { // 10 MB, sesuaikan jika perlu
-			http.Error(w, "Request too large or invalid multipart form: "+err.Error(), http.StatusBadRequest)
-			return
-		}
+    return func(w http.ResponseWriter, r *http.Request) {
+        const maxKTPFileSize = 5 * 1024 * 1024
+        const extraFormDataSizeUser = 1 * 1024 * 1024
+        maxTotalUserFormSize := int64(extraFormDataSizeUser + maxKTPFileSize)
 
-		var newUser database.User
-		var ktpImageID sql.NullInt64
+        if err := r.ParseMultipartForm(maxTotalUserFormSize); err != nil {
+            writeJSONError(w, "Request too large or invalid multipart form: "+err.Error(), http.StatusBadRequest)
+            return
+        }
 
-		// 1. Proses file KTP jika diunggah
-		file, handler, err := r.FormFile("ktp_image") // "ktp_image" adalah nama field dari frontend
-		var ktpStoragePath string
-		var validatedMimeType string // Untuk menyimpan MIME type yang divalidasi
+        // Ambil data dari form
+        newUser := database.User{
+            UserID:    uuid.New().String(),
+            CreatedAt: time.Now(),
+            Name:      r.FormValue("name"),
+            Email:     r.FormValue("email"),
+            Phone:     r.FormValue("phone"),
+            NIK:       r.FormValue("nik"),
+        }
+        password := r.FormValue("password")
 
-		if err != nil {
-			if err != http.ErrMissingFile {
-				http.Error(w, "Error retrieving KTP image: "+err.Error(), http.StatusBadRequest)
-				return
-			}
-			// File KTP tidak ada, lanjutkan tanpa memproses gambar KTP
-		} else {
-			defer file.Close()
+        if newUser.Name == "" || newUser.Email == "" || password == "" || newUser.NIK == "" {
+            writeJSONError(w, "Missing required user fields (name, email, password, nik)", http.StatusBadRequest)
+            return
+        }
 
-			// Validasi tipe MIME menggunakan fungsi helper terpusat
-			// Asumsi ValidateMimeType dan DefaultAllowedMimeTypes ada di package server
-			var errMime error
-			validatedMimeType, errMime = ValidateMimeType(file, handler, DefaultAllowedMimeTypes)
-			if errMime != nil {
-				http.Error(w, fmt.Sprintf("KTP image MIME type validation failed: %v", errMime), http.StatusBadRequest)
-				return
-			}
-			// file pointer sudah di-reset oleh ValidateMimeType jika validasi dari konten,
-			// atau tidak berubah jika dari header. Kita akan reset lagi sebelum io.Copy untuk memastikan.
+        // Hash password
+        hashedPasswordBytes, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+        if err != nil {
+            writeJSONError(w, "Failed to hash password: "+err.Error(), http.StatusInternalServerError)
+            return
+        }
+        newUser.Password = string(hashedPasswordBytes)
 
-			const maxKTPFileSize = 5 * 1024 * 1024 // 5MB, sesuaikan jika perlu
-			if handler.Size > maxKTPFileSize {
-				http.Error(w, fmt.Sprintf("KTP image file size exceeds %dMB limit.", maxKTPFileSize/(1024*1024)), http.StatusBadRequest)
-				return
-			}
+        // Mulai proses file dan transaksi database
+        tx, err := s.db.Get().BeginTx(r.Context(), nil)
+        if err != nil {
+            writeJSONError(w, "Failed to start database transaction: "+err.Error(), http.StatusInternalServerError)
+            return
+        }
+        // Defer Rollback adalah jaring pengaman. Jika Commit berhasil, Rollback tidak akan berpengaruh.
+        defer tx.Rollback()
 
-			uniqueFilename := generateUniqueFilenameLocal(handler.Filename) // Menggunakan fungsi lokal
-			ktpStoragePath = filepath.Join(imageUploadPath, uniqueFilename) // imageUploadPath dari image.go
+        // Proses file KTP di dalam scope transaksi
+        file, handler, err := r.FormFile("ktp_image")
+        if err != nil && err != http.ErrMissingFile {
+            writeJSONError(w, "Error retrieving KTP image: "+err.Error(), http.StatusBadRequest)
+            return
+        }
 
-			if err := os.MkdirAll(imageUploadPath, os.ModePerm); err != nil {
-				http.Error(w, "Failed to create upload directory: "+err.Error(), http.StatusInternalServerError)
-				return
-			}
+        if handler != nil { // Hanya proses jika file diunggah
+            defer file.Close()
 
-			dst, err := os.Create(ktpStoragePath)
-			if err != nil {
-				http.Error(w, "Failed to save KTP image file: "+err.Error(), http.StatusInternalServerError)
-				return
-			}
-			defer dst.Close()
+            validatedMimeType, errMime := ValidateMimeType(file, handler, DefaultAllowedMimeTypes)
+            if errMime != nil {
+                writeJSONError(w, fmt.Sprintf("KTP image MIME type validation failed: %v", errMime), http.StatusBadRequest)
+                return
+            }
 
-			// Pastikan file pointer ada di awal sebelum io.Copy
-			if _, errSeek := file.Seek(0, io.SeekStart); errSeek != nil {
-				os.Remove(ktpStoragePath)
-				http.Error(w, "Internal server error: could not process KTP image file after validation", http.StatusInternalServerError)
-				return
-			}
+            if handler.Size > maxKTPFileSize {
+                writeJSONError(w, fmt.Sprintf("KTP image file size exceeds %dMB limit.", maxKTPFileSize/(1024*1024)), http.StatusBadRequest)
+                return
+            }
 
-			if _, err := io.Copy(dst, file); err != nil {
-				os.Remove(ktpStoragePath) // Hapus file parsial jika copy gagal
-				http.Error(w, "Failed to copy KTP image file content: "+err.Error(), http.StatusInternalServerError)
-				return
-			}
-		}
+            // Simpan file ke disk
+            uniqueFilename := generateUniqueFilenameLocal(handler.Filename)
+            ktpStoragePath := filepath.Join(imageUploadPath, uniqueFilename)
 
-		// 2. Ambil data user lainnya dari form
-		newUser.UserID = uuid.New().String()
-		newUser.CreatedAt = time.Now()
-		newUser.Name = r.FormValue("name")
-		newUser.Email = r.FormValue("email")
-		newUser.Phone = r.FormValue("phone")
-		password := r.FormValue("password")
-		newUser.NIK = r.FormValue("nik")
+            // Jika terjadi error setelah ini, Rollback akan membatalkan DB, dan kita perlu menghapus file secara manual.
+            // Kita akan menghapus file jika commit gagal.
+            if err := saveUploadedFile(file, ktpStoragePath); err != nil {
+                writeJSONError(w, "Failed to save KTP image file: "+err.Error(), http.StatusInternalServerError)
+                return
+            }
 
-		if newUser.Name == "" || newUser.Email == "" || password == "" || newUser.NIK == "" {
-			if ktpStoragePath != "" {
-				os.Remove(ktpStoragePath)
-			}
-			http.Error(w, "Missing required user fields (name, email, password, nik)", http.StatusBadRequest)
-			return
-		}
+            // Buat record gambar di DB
+            imgRecord := database.Image{
+                StoragePath:      filepath.ToSlash(ktpStoragePath),
+                FilenameOriginal: handler.Filename,
+                MimeType:         validatedMimeType,
+                SizeBytes:        handler.Size,
+            }
+            if err := database.CreateImageTx(r.Context(), tx, &imgRecord); err != nil {
+                os.Remove(ktpStoragePath) // Hapus file jika DB insert gagal
+                writeJSONError(w, "Failed to save KTP image metadata: "+err.Error(), http.StatusInternalServerError)
+                return
+            }
+            newUser.KTPImageID = &imgRecord.ImageID
+        }
 
-		// Hash password (langsung menggunakan bcrypt)
-		hashedPasswordBytes, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
-		if err != nil {
-			if ktpStoragePath != "" {
-				os.Remove(ktpStoragePath)
-			}
-			http.Error(w, "Failed to hash password: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
-		newUser.Password = string(hashedPasswordBytes)
+        // Buat record user di DB
+        if err := database.CreateUserTx(r.Context(), tx, &newUser); err != nil {
+            if newUser.KTPImageID != nil {
+                // Hapus file yang sudah disimpan jika user create gagal
+                path, _ := database.GetImageStoragePath(r.Context(), tx, *newUser.KTPImageID)
+                if path != "" {
+                    os.Remove(path)
+                }
+            }
+            writeJSONError(w, "Failed to create user: "+err.Error(), http.StatusInternalServerError)
+            return
+        }
 
-		// 3. Mulai Transaksi Database
-		tx, err := s.db.Get().BeginTx(r.Context(), nil)
-		if err != nil {
-			if ktpStoragePath != "" {
-				os.Remove(ktpStoragePath)
-			}
-			http.Error(w, "Failed to start database transaction: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
-		var txErr error // Variabel untuk menampung error dalam scope defer
-		defer func() {
-			if p := recover(); p != nil {
-				tx.Rollback()
-				if ktpStoragePath != "" { os.Remove(ktpStoragePath) }
-				panic(p)
-			} else if txErr != nil {
-				tx.Rollback()
-				if ktpStoragePath != "" { // Hapus file jika transaksi gagal
-					os.Remove(ktpStoragePath)
-				}
-			}
-		}()
+        // Jika semua berhasil, commit transaksi
+        if err := tx.Commit(); err != nil {
+            // Jika commit gagal, file mungkin sudah tersimpan. Coba hapus.
+            if newUser.KTPImageID != nil {
+                path, _ := database.GetImageStoragePath(r.Context(), s.db.Get(), *newUser.KTPImageID)
+                if path != "" {
+                    os.Remove(path)
+                }
+            }
+            writeJSONError(w, "Failed to commit database transaction: "+err.Error(), http.StatusInternalServerError)
+            return
+        }
 
-		if ktpStoragePath != "" && handler != nil {
-			// Gunakan validatedMimeType yang didapat dari ValidateMimeType
-			imgRecord := database.Image{
-				StoragePath:      filepath.ToSlash(ktpStoragePath),
-				FilenameOriginal: handler.Filename,
-				MimeType:         validatedMimeType, // Menggunakan MIME type yang sudah divalidasi
-				SizeBytes:        handler.Size,      // handler.Size seharusnya aman di sini
-			}
-			txErr = database.CreateImageTx(r.Context(), tx, &imgRecord)
-			if txErr != nil {
-				// txErr akan ditangkap oleh defer func untuk rollback dan penghapusan file
-				http.Error(w, "Failed to save KTP image metadata to database: "+txErr.Error(), http.StatusInternalServerError)
-				return
-			}
-			ktpImageID = sql.NullInt64{Int64: imgRecord.ImageID, Valid: true}
-		}
-
-		if ktpImageID.Valid {
-			newUser.KTPImageID = &ktpImageID.Int64
-		} else {
-			newUser.KTPImageID = nil
-		}
-
-		txErr = database.CreateSingleUserTx(r.Context(), tx, &newUser)
-		if txErr != nil {
-			http.Error(w, "Failed to create user: "+txErr.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		txErr = tx.Commit()
-		if txErr != nil {
-			http.Error(w, "Failed to commit database transaction: "+txErr.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		newUser.Password = ""
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusCreated)
-		json.NewEncoder(w).Encode(newUser)
-	}
+        newUser.Password = "" // Jangan kirim password ke client
+        w.Header().Set("Content-Type", "application/json")
+        w.WriteHeader(http.StatusCreated)
+        json.NewEncoder(w).Encode(newUser)
+    }
 }
 
 func (s *Server) handleGetUser() http.HandlerFunc {
@@ -208,7 +162,7 @@ func (s *Server) handleGetUser() http.HandlerFunc {
 		if email == "" {
 			users, err := database.FindManyUser(s.db.Get(), r.Context())
 			if err != nil {
-				http.Error(w, "Failed to retrieve users: "+err.Error(), http.StatusInternalServerError)
+        writeJSONError(w, "Failed to retrieve users: "+err.Error(), http.StatusInternalServerError)
 				return
 			}
 			for i := range users {
@@ -221,10 +175,11 @@ func (s *Server) handleGetUser() http.HandlerFunc {
 		user, err := database.FindSingleUser(s.db.Get(), email, r.Context())
 		if err != nil {
 			if err == sql.ErrNoRows || err.Error() == "user not found" {
-				http.Error(w, "User not found", http.StatusNotFound)
+				writeJSONError(w, "User not found", http.StatusNotFound)
+
 			} else {
-				http.Error(w, "Failed to retrieve user: "+err.Error(), http.StatusInternalServerError)
-			}
+				writeJSONError(w, "Failed to retrieve user: "+err.Error(), http.StatusInternalServerError)
+      }
 			return
 		}
 		user.Password = ""
@@ -237,16 +192,16 @@ func (s *Server) handleGetUserByID() http.HandlerFunc {
 		w.Header().Set("Content-Type", "application/json")
 		userID := mux.Vars(r)["id"]
 		if userID == "" {
-			http.Error(w, "User ID is required", http.StatusBadRequest)
+			writeJSONError(w, "User ID is required", http.StatusBadRequest)
 			return
 		}
 
 		user, err := database.FindUserByID(s.db.Get(), userID, r.Context())
 		if err != nil {
 			if err == sql.ErrNoRows || err.Error() == "user not found" {
-				http.Error(w, "User not found", http.StatusNotFound)
-			} else {
-				http.Error(w, "Failed to retrieve user: "+err.Error(), http.StatusInternalServerError)
+				writeJSONError(w, "User not found", http.StatusNotFound)
+      } else {
+        writeJSONError(w, "Failed to retrieve user: "+err.Error(), http.StatusInternalServerError)
 			}
 			return
 		}
@@ -256,89 +211,137 @@ func (s *Server) handleGetUserByID() http.HandlerFunc {
 }
 
 func (s *Server) handleUpdateUser() http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		// Ambil ID user target dari URL
+    return func(w http.ResponseWriter, r *http.Request) {
         targetUserID := mux.Vars(r)["id"]
 
-        // Ambil info user yang membuat permintaan dari token JWT (via context)
         requestingUserID, ok := r.Context().Value(middleware.UserIDContextKey).(string)
         if !ok {
-            http.Error(w, "Unauthorized: User ID not found in token", http.StatusUnauthorized)
+            writeJSONError(w, "Unauthorized: User ID not found in token", http.StatusUnauthorized)
             return
         }
         isRequestingUserAdmin, _ := r.Context().Value(middleware.AdminStatusContextKey).(bool)
 
-        // LOGIKA OTORISASI:
-        // Izinkan jika pengguna adalah admin ATAU jika pengguna sedang memperbarui profilnya sendiri.
         if !isRequestingUserAdmin && requestingUserID != targetUserID {
-            http.Error(w, "Forbidden: You can only update your own profile", http.StatusForbidden)
+            writeJSONError(w, "Forbidden: You can only update your own profile", http.StatusForbidden)
             return
         }
 
-        w.Header().Set("Content-Type", "application/json")
-        var userUpdates database.User
-        if err := json.NewDecoder(r.Body).Decode(&userUpdates); err != nil {
-            http.Error(w, "Invalid request payload: "+err.Error(), http.StatusBadRequest)
+        var updates map[string]interface{}
+        if err := json.NewDecoder(r.Body).Decode(&updates); err != nil {
+            writeJSONError(w, "Invalid request payload: "+err.Error(), http.StatusBadRequest)
             return
         }
 
-        if userUpdates.Password != "" {
-            hashedPasswordBytes, err := bcrypt.GenerateFromPassword([]byte(userUpdates.Password), bcrypt.DefaultCost)
+        if password, ok := updates["password"].(string); ok && password != "" {
+            hashedPasswordBytes, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
             if err != nil {
-                http.Error(w, "Failed to hash new password: "+err.Error(), http.StatusInternalServerError)
+                writeJSONError(w, "Failed to hash new password: "+err.Error(), http.StatusInternalServerError)
                 return
             }
-            userUpdates.Password = string(hashedPasswordBytes)
+            updates["password"] = string(hashedPasswordBytes)
+        } else if ok && password == "" {
+            delete(updates, "password")
         }
 
-        // Gunakan targetUserID dari URL untuk update, bukan dari body
-        if err := database.UpdateSingleUser(s.db.Get(), targetUserID, userUpdates, r.Context()); err != nil {
-            if err.Error() == "user not found for update" || err == sql.ErrNoRows {
-                http.Error(w, "User not found for update", http.StatusNotFound)
+        if len(updates) == 0 {
+            writeJSONError(w, "No update fields provided", http.StatusBadRequest)
+            return
+        }
+
+        // Gunakan transaksi untuk operasi update
+        tx, err := s.db.Get().BeginTx(r.Context(), nil)
+        if err != nil {
+            writeJSONError(w, "Failed to start transaction", http.StatusInternalServerError)
+            return
+        }
+        defer tx.Rollback()
+
+        if err := database.UpdateUserTx(r.Context(), tx, targetUserID, updates); err != nil {
+            if errors.Is(err, sql.ErrNoRows) {
+                writeJSONError(w, "User not found or no effective changes made", http.StatusNotFound)
             } else {
-                http.Error(w, "Failed to update user: "+err.Error(), http.StatusInternalServerError)
+                writeJSONError(w, "Failed to update user: "+err.Error(), http.StatusInternalServerError)
             }
+            return
+        }
+
+        if err := tx.Commit(); err != nil {
+            writeJSONError(w, "Failed to commit transaction", http.StatusInternalServerError)
             return
         }
 
         updatedUser, err := database.FindUserByID(s.db.Get(), targetUserID, r.Context())
         if err != nil {
-            w.WriteHeader(http.StatusOK)
-            json.NewEncoder(w).Encode(map[string]string{"message": "User updated successfully, but failed to retrieve updated record."})
+            writeJSONError(w, "User updated, but failed to retrieve new data", http.StatusInternalServerError)
             return
         }
-        updatedUser.Password = ""
+        updatedUser.Password = "" // Jangan kirim password ke client
 
+        w.Header().Set("Content-Type", "application/json")
         w.WriteHeader(http.StatusOK)
         json.NewEncoder(w).Encode(updatedUser)
     }
 }
 
 func (s *Server) handleDeleteUser() http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		userID := mux.Vars(r)["id"]
-		if err := database.DeleteSingleUser(s.db.Get(), userID, r.Context()); err != nil {
-			if err.Error() == "user not found for delete" || err == sql.ErrNoRows {
-				http.Error(w, "User not found for delete", http.StatusNotFound)
-			} else {
-				http.Error(w, "Failed to delete user: "+err.Error(), http.StatusInternalServerError)
-			}
-			return
-		}
-		w.WriteHeader(http.StatusNoContent)
-	}
+    return func(w http.ResponseWriter, r *http.Request) {
+        userID := mux.Vars(r)["id"]
+
+        tx, err := s.db.Get().BeginTx(r.Context(), nil)
+        if err != nil {
+            writeJSONError(w, "Failed to start transaction", http.StatusInternalServerError)
+            return
+        }
+        defer tx.Rollback()
+
+        _ = database.DeleteAdminTx(r.Context(), tx, userID) 
+
+        if err := database.DeleteUserTx(r.Context(), tx, userID); err != nil {
+            if errors.Is(err, sql.ErrNoRows) {
+                writeJSONError(w, "User not found", http.StatusNotFound)
+            } else {
+                writeJSONError(w, "Failed to delete user: "+err.Error(), http.StatusInternalServerError)
+            }
+            return
+        }
+
+        if err := tx.Commit(); err != nil {
+            writeJSONError(w, "Failed to commit transaction", http.StatusInternalServerError)
+            return
+        }
+
+        w.WriteHeader(http.StatusNoContent)
+    }
 }
 
-// RegisterUserRoutes registers all user-related routes (publik, seperti registrasi)
+func saveUploadedFile(file io.ReadSeeker, path string) error {
+    if err := os.MkdirAll(filepath.Dir(path), os.ModePerm); err != nil {
+        return err
+    }
+
+    dst, err := os.Create(path)
+    if err != nil {
+        return err
+    }
+    defer dst.Close()
+
+    // Kembali ke awal file setelah validasi MIME type
+    if _, err := file.Seek(0, io.SeekStart); err != nil {
+        return err
+    }
+
+    _, err = io.Copy(dst, file)
+    return err
+}
+
 func (s *Server) RegisterUserRoutes(r *mux.Router) {
 	r.HandleFunc("/users", s.handleCreateUser()).Methods("POST")
 }
 
-// RegisterUserProtectedRoutes registers routes that require authentication
 func (s *Server) RegisterUserProtectedRoutes(r *mux.Router) {
 	adminOnlyMiddleware := middleware.AdminOnlyMiddleware()
-	r.Handle("/users", adminOnlyMiddleware(s.handleGetUser())).Methods("GET")       // List all atau by email
-	r.HandleFunc("/users/{id}", s.handleGetUserByID()).Methods("GET") // Get by UserID
+	r.Handle("/users", adminOnlyMiddleware(s.handleGetUser())).Methods("GET")   
+	r.HandleFunc("/users/{id}", s.handleGetUserByID()).Methods("GET") 
 	r.HandleFunc("/users/{id}", s.handleUpdateUser()).Methods("PUT")
 	r.Handle("/users/{id}", adminOnlyMiddleware(s.handleDeleteUser())).Methods("DELETE")
 }

@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"errors"
 	"time"
+	"fmt"
+	"strings"
 )
 
 type User struct {
@@ -14,30 +16,25 @@ type User struct {
 	Phone      string    `json:"phone"`
 	Password   string    `json:"password"` 
 	NIK        string    `json:"nik"`
-	KTPImageID *int64    `json:"ktp_image_id,omitempty"` // Menggunakan pointer agar bisa null
+	KTPImageID *int64    `json:"ktp_image_id,omitempty"`
 	CreatedAt  time.Time `json:"created_at"`
 }
 
-// CreateSingleUserTx inserts a new user record into the database within a transaction.
-func CreateSingleUserTx(ctx context.Context, tx *sql.Tx, u *User) error {
-	query := `
+func CreateUserTx(ctx context.Context, tx *sql.Tx, u *User) error {
+    // Menghapus RETURNING user_id karena tidak digunakan
+    query := `
         INSERT INTO users (user_id, name, email, phone, password, nik, ktp_image_id, created_at)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-        RETURNING user_id` // Anda bisa menghapus RETURNING user_id jika tidak perlu mengembalikan ID dari sini
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`
 
-	var ktpImage sql.NullInt64
-	if u.KTPImageID != nil {
-		ktpImage = sql.NullInt64{Int64: *u.KTPImageID, Valid: true}
-	}
-	// Jika Anda tidak menggunakan RETURNING user_id:
-	_, err := tx.ExecContext(ctx, query,
-		u.UserID, u.Name, u.Email, u.Phone, u.Password, u.NIK, ktpImage, u.CreatedAt,
-	)
-	return err
-	// Jika Anda menggunakan RETURNING user_id:
-	// return tx.QueryRowContext(ctx, query,
-	// 	u.UserID, u.Name, u.Email, u.Phone, u.Password, u.NIK, ktpImage, u.CreatedAt,
-	// ).Scan(&u.UserID) // Pastikan u.UserID adalah pointer jika Anda ingin mengupdate nilai di struct u
+    var ktpImage sql.NullInt64
+    if u.KTPImageID != nil {
+        ktpImage = sql.NullInt64{Int64: *u.KTPImageID, Valid: true}
+    }
+
+    _, err := tx.ExecContext(ctx, query,
+        u.UserID, u.Name, u.Email, u.Phone, u.Password, u.NIK, ktpImage, u.CreatedAt,
+    )
+    return err
 }
 
 func CreateManyUser(db *sql.DB, users []User, ctx context.Context) error {
@@ -45,12 +42,11 @@ func CreateManyUser(db *sql.DB, users []User, ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback() // Rollback jika terjadi error sebelum Commit
+	defer tx.Rollback() 
 
 	stmt, err := tx.PrepareContext(ctx, `
         INSERT INTO users (user_id, name, email, phone, password, nik, ktp_image_id, created_at)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-        RETURNING user_id`) // Hapus RETURNING jika tidak digunakan
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`) 
 	if err != nil {
 		return err
 	}
@@ -92,7 +88,6 @@ func FindSingleUser(db *sql.DB, email string, ctx context.Context) (*User, error
 	return &u, nil
 }
 
-// FindUserByID mengambil user berdasarkan UserID
 func FindUserByID(db *sql.DB, userID string, ctx context.Context) (*User, error) {
 	q := `SELECT user_id, name, email, phone, password, nik, ktp_image_id, created_at FROM users WHERE user_id = $1 LIMIT 1`
 	row := db.QueryRowContext(ctx, q, userID)
@@ -130,50 +125,67 @@ func FindManyUser(db *sql.DB, ctx context.Context) ([]User, error) {
 	return users, nil
 }
 
-// UpdateSingleUser memperbarui data user.
-// Jika Anda ingin field 'updated_at' di database, Anda perlu menambahkannya kembali
-// dan mengaturnya di sini, atau menggunakan trigger database.
-func UpdateSingleUser(db *sql.DB, userID string, data User, ctx context.Context) error {
-	// Query ini mengupdate field yang relevan.
-	// Password sebaiknya diupdate melalui fungsi terpisah yang juga menangani hashing.
-	// KTPImageID juga mungkin memerlukan logika khusus jika file KTP diubah.
-	// Untuk contoh ini, kita asumsikan KTPImageID bisa diupdate langsung.
-	q := `
-        UPDATE users SET name=$1, email=$2, phone=$3, nik=$4, ktp_image_id=$5
-        WHERE user_id=$6` // updated_at dihapus dari SET clause
+func UpdateUserTx(ctx context.Context, tx *sql.Tx, userID string, updates map[string]interface{}) error {
+    if len(updates) == 0 {
+        return errors.New("no fields provided for user update")
+    }
 
-	var ktpImage sql.NullInt64
-	if data.KTPImageID != nil {
-		ktpImage = sql.NullInt64{Int64: *data.KTPImageID, Valid: true}
-	}
+    // Daftar kolom yang diizinkan untuk diupdate untuk mencegah SQL Injection.
+    allowedColumns := map[string]bool{
+        "name":         true,
+        "email":        true,
+        "phone":        true,
+        "password":     true,
+        "nik":          true,
+        "ktp_image_id": true,
+    }
 
-	res, err := db.ExecContext(ctx, q,
-		data.Name, data.Email, data.Phone, data.NIK, ktpImage, userID)
-	if err != nil {
-		return err
-	}
-	count, err := res.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if count == 0 {
-		return errors.New("user not found or no rows updated") // Pesan error yang lebih spesifik
-	}
-	return nil
+    var queryBuilder strings.Builder
+    args := make([]interface{}, 0, len(updates)+1)
+    argCount := 1
+
+    queryBuilder.WriteString("UPDATE users SET ")
+
+    for col, val := range updates {
+        if _, ok := allowedColumns[col]; !ok {
+            return fmt.Errorf("invalid or forbidden column for update: %s", col)
+        }
+        queryBuilder.WriteString(fmt.Sprintf("%s = $%d, ", col, argCount))
+        args = append(args, val)
+        argCount++
+    }
+
+    finalQuery := strings.TrimSuffix(queryBuilder.String(), ", ")
+    finalQuery += fmt.Sprintf(" WHERE user_id = $%d", argCount)
+    args = append(args, userID)
+
+    res, err := tx.ExecContext(ctx, finalQuery, args...)
+    if err != nil {
+        return fmt.Errorf("error executing user update in tx: %w", err)
+    }
+
+    count, err := res.RowsAffected()
+    if err != nil {
+        return fmt.Errorf("error getting rows affected after user update in tx: %w", err)
+    }
+    if count == 0 {
+        return sql.ErrNoRows // Mengindikasikan tidak ada baris yang diupdate (mungkin ID tidak ditemukan)
+    }
+    return nil
 }
 
-func DeleteSingleUser(db *sql.DB, userID string, ctx context.Context) error {
-	q := `DELETE FROM users WHERE user_id=$1`
-	res, err := db.ExecContext(ctx, q, userID)
-	if err != nil {
-		return err
-	}
-	count, err := res.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if count == 0 {
-		return errors.New("user not found or no rows deleted")
-	}
-	return nil
+func DeleteUserTx(ctx context.Context, tx *sql.Tx, userID string) error {
+    q := `DELETE FROM users WHERE user_id=$1`
+    res, err := tx.ExecContext(ctx, q, userID)
+    if err != nil {
+        return fmt.Errorf("error deleting user ID %s in tx: %w", userID, err)
+    }
+    count, err := res.RowsAffected()
+    if err != nil {
+        return fmt.Errorf("error getting rows affected for user ID %s delete in tx: %w", userID, err)
+    }
+    if count == 0 {
+        return sql.ErrNoRows
+    }
+    return nil
 }
