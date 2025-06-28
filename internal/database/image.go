@@ -111,3 +111,27 @@ func UpdateImageMetadataTx(ctx context.Context, tx *sql.Tx, id int64, newFilenam
     }
     return nil
 }
+
+func GetImageStoragePathAndDeleteTx(ctx context.Context, tx *sql.Tx, imageID int64) (string, error) {
+    var storagePath string
+
+    // 1. Ambil storage_path SEBELUM menghapus record.
+    err := tx.QueryRowContext(ctx, "SELECT storage_path FROM images WHERE image_id = $1", imageID).Scan(&storagePath)
+    if err != nil {
+        if err == sql.ErrNoRows {
+            // Jika gambar tidak ditemukan, itu bukan error. Cukup kembalikan path kosong.
+            return "", nil
+        }
+        // Untuk error lain, kembalikan error tersebut.
+        return "", fmt.Errorf("failed to get image path before delete (id: %d): %w", imageID, err)
+    }
+
+    // 2. Hapus record dari tabel images.
+    _, err = tx.ExecContext(ctx, "DELETE FROM images WHERE image_id = $1", imageID)
+    if err != nil {
+        return "", fmt.Errorf("failed to delete image record in transaction (id: %d): %w", imageID, err)
+    }
+
+    // Kembalikan path yang ditemukan agar bisa dihapus dari disk nanti.
+    return storagePath, nil
+}
