@@ -7,11 +7,13 @@ import (
 	"errors" // Ditambahkan untuk errors.Is
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings" // Ditambahkan untuk toDetectedResponse
+	"sync"
 	"time"
 
 	"github.com/gorilla/mux"
@@ -173,6 +175,55 @@ func (s *Server) handleCreateDetected() http.HandlerFunc {
         var personImageStoragePath string
         var motorcycleImageStoragePath string
 
+        var wg sync.WaitGroup
+        errChan := make(chan error, 2) // Channel untuk menampung error dari goroutine
+
+        var personImageID sql.NullInt64
+        var motorcycleImageID sql.NullInt64
+
+        // Mulai goroutine untuk person_image
+        wg.Add(1)
+        go func() {
+            defer wg.Done()
+            var err error
+            personImageID, personImageStoragePath, err = processImageUpload(r, "person_image", tx)
+            if err != nil {
+                errChan <- fmt.Errorf("failed to process person_image: %w", err)
+            }
+        }()
+
+        // Mulai goroutine untuk motorcycle_image
+        wg.Add(1)
+        go func() {
+            defer wg.Done()
+            var err error
+            motorcycleImageID, motorcycleImageStoragePath, err = processImageUpload(r, "motorcycle_image", tx)
+            if err != nil {
+                errChan <- fmt.Errorf("failed to process motorcycle_image: %w", err)
+            }
+        }()
+
+        // Tunggu kedua goroutine selesai
+        wg.Wait()
+        close(errChan) // Tutup setelah semua goroutine selesai
+
+        // Periksa error
+        for err := range errChan {
+            if err != nil {
+                txErr = err // Set txErr agar defer bisa rollback dan hapus file
+                statusCode := http.StatusInternalServerError
+                errMsg := strings.ToLower(err.Error())
+                if strings.Contains(errMsg, "file is empty") ||
+                    strings.Contains(errMsg, "size exceeds") ||
+                    strings.Contains(errMsg, "invalid type") ||
+                    strings.Contains(errMsg, "mime type validation failed") {
+                    statusCode = http.StatusBadRequest
+                }
+                writeJSONError(w, err.Error(), statusCode)
+                return
+            }
+        }
+
         defer func() {
             if p := recover(); p != nil {
                 tx.Rollback()
@@ -186,22 +237,8 @@ func (s *Server) handleCreateDetected() http.HandlerFunc {
             }
         }()
 
-        fmt.Println("DEBUG handleCreateDetected: Processing person_image")
-        var personImageID sql.NullInt64
-        personImageID, personImageStoragePath, txErr = processImageUpload(r, "person_image", tx)
-        if txErr != nil {
-            writeJSONError(w, "Failed to process person_image: "+txErr.Error(), determineImageUploadErrorStatusCode(txErr))
-            return
-        }
+        // Tetapkan ID gambar ke struct setelah goroutine selesai
         newDetected.PersonImageID = personImageID
-
-        fmt.Println("DEBUG handleCreateDetected: Processing motorcycle_image")
-        var motorcycleImageID sql.NullInt64
-        motorcycleImageID, motorcycleImageStoragePath, txErr = processImageUpload(r, "motorcycle_image", tx)
-        if txErr != nil {
-            writeJSONError(w, "Failed to process motorcycle_image: "+txErr.Error(), determineImageUploadErrorStatusCode(txErr))
-            return
-        }
         newDetected.MotorcycleImageID = motorcycleImageID
 
         txErr = database.CreateDetectedTx(r.Context(), tx, &newDetected)
@@ -232,7 +269,7 @@ func (s *Server) handleGetDetected() http.HandlerFunc {
         idStr, idExists := vars["id"]
         db := s.db.Get()
 
-        // Prioritas 1: Get by specific ID jika ada di path
+        // Get by specific ID jika ada di path
         if idExists && idStr != "" {
             id, err := strconv.Atoi(idStr)
             if err != nil {
@@ -257,17 +294,21 @@ func (s *Server) handleGetDetected() http.HandlerFunc {
         queryParams := r.URL.Query()
         startTimeStr := queryParams.Get("start_time")
         endTimeStr := queryParams.Get("end_time")
-        lostIDStr := queryParams.Get("lostid")
-        radiusStr := queryParams.Get("radius_km") // Menggunakan nama parameter yang konsisten
+        radiusStr := queryParams.Get("radius_km") 
         latStr := queryParams.Get("lat")
         lonStr := queryParams.Get("lon")
 
-        // Prioritas 2: Filter gabungan (Waktu + Jarak dari Laporan Kehilangan)
-        if startTimeStr != "" && endTimeStr != "" && lostIDStr != "" && radiusStr != "" {
+        // Filter gabungan (Waktu + Jarak dari Laporan Kehilangan)
+        if startTimeStr != "" && endTimeStr != "" && latStr != "" && lonStr != "" && radiusStr != "" {
             // 1. Parse semua parameter yang diperlukan
-            lostID, err := strconv.Atoi(lostIDStr)
+            lat, err := strconv.ParseFloat(latStr, 64)
             if err != nil {
-                writeJSONError(w, "invalid lostid: must be an integer", http.StatusBadRequest)
+                writeJSONError(w, "invalid lat: must be a number", http.StatusBadRequest)
+                return
+            }
+            lon, err := strconv.ParseFloat(lonStr, 64)
+            if err != nil {
+                writeJSONError(w, "invalid lon: must be a number", http.StatusBadRequest)
                 return
             }
             radiusKm, err := strconv.ParseFloat(radiusStr, 64)
@@ -289,31 +330,25 @@ func (s *Server) handleGetDetected() http.HandlerFunc {
                 writeJSONError(w, "end_time must be after start_time", http.StatusBadRequest)
                 return
             }
-
-            // 2. Ambil koordinat dari lost_report
-            lostReport, err := database.GetLostReportWithVehicleInfoByID(r.Context(), db, lostID)
-            if err != nil {
-                if err.Error() == "lost_report not found" {
-                    writeJSONError(w, fmt.Sprintf("lost report with id %d not found", lostID), http.StatusNotFound)
-                } else {
-                    writeJSONError(w, "failed to retrieve lost report data", http.StatusInternalServerError)
-                }
+            // Validasi tambahan untuk lat/lon
+            if lat < -90 || lat > 90 {
+                writeJSONError(w, "lat must be between -90 and 90", http.StatusBadRequest)
                 return
             }
-            if lostReport.Latitude == nil || lostReport.Longitude == nil {
-                writeJSONError(w, fmt.Sprintf("lost report with id %d does not have location data", lostID), http.StatusBadRequest)
+            if lon < -180 || lon > 180 {
+                writeJSONError(w, "lon must be between -180 and 180", http.StatusBadRequest)
                 return
             }
 
-            // 3. Panggil fungsi database yang baru
-            detectedListDB, err := database.ListDetectedByProximityAndTimestamp(r.Context(), db, *lostReport.Latitude, *lostReport.Longitude, radiusKm, startTime, endTime)
+            // 2. Panggil fungsi database dengan parameter yang sudah diparsing
+            detectedListDB, err := database.ListDetectedByProximityAndTimestamp(r.Context(), db, lat, lon, radiusKm, startTime, endTime)
             if err != nil {
                 fmt.Printf("ERROR: Failed to list detected by proximity and time: %v\n", err)
                 writeJSONError(w, "Failed to retrieve detected records with combined filter", http.StatusInternalServerError)
                 return
             }
 
-            // 4. Kirim respons
+            // 3. Kirim respons
             responseList := make([]DetectedResponse, 0, len(detectedListDB))
             for i := range detectedListDB {
                 responseList = append(responseList, s.toDetectedResponse(r.Context(), db, &detectedListDB[i]))
@@ -322,7 +357,7 @@ func (s *Server) handleGetDetected() http.HandlerFunc {
             return
         }
 
-        // Prioritas 3: Filter berdasarkan rentang waktu saja
+        // Filter berdasarkan rentang waktu saja
         if startTimeStr != "" && endTimeStr != "" {
             layout := time.RFC3339
             startTime, err := time.Parse(layout, startTimeStr)
@@ -357,7 +392,7 @@ func (s *Server) handleGetDetected() http.HandlerFunc {
             return
         }
 
-        // Prioritas 4: Filter berdasarkan jarak saja (menggunakan lat/lon manual)
+        // Filter berdasarkan jarak (menggunakan lat/lon manual)
         if latStr != "" && lonStr != "" && radiusStr != "" {
             lat, err := strconv.ParseFloat(latStr, 64)
             if err != nil {
@@ -413,7 +448,6 @@ func (s *Server) handleGetDetected() http.HandlerFunc {
 
 func (s *Server) handleUpdateDetected() http.HandlerFunc {
     return func(w http.ResponseWriter, r *http.Request) {
-        // Ganti http.Error dengan writeJSONError jika Anda sudah mengimplementasikannya secara global
         w.Header().Set("Content-Type", "application/json")
         idStr := mux.Vars(r)["id"]
         id, err := strconv.Atoi(idStr)
@@ -446,7 +480,7 @@ func (s *Server) handleUpdateDetected() http.HandlerFunc {
         }
 
         // Update field yang diizinkan
-        if dUpdates.CameraID != 0 { // Asumsi 0 bukan CameraID yang valid
+        if dUpdates.CameraID != 0 { 
             existingDetected.CameraID = dUpdates.CameraID
         }
         if !dUpdates.Timestamp.IsZero() {
@@ -495,7 +529,6 @@ func (s *Server) handleUpdateDetected() http.HandlerFunc {
 
 func (s *Server) handleDeleteDetected() http.HandlerFunc {
     return func(w http.ResponseWriter, r *http.Request) {
-        // Ganti http.Error dengan writeJSONError jika Anda sudah mengimplementasikannya secara global
         idStr := mux.Vars(r)["id"]
         id, err := strconv.Atoi(idStr)
         if err != nil {
@@ -503,19 +536,74 @@ func (s *Server) handleDeleteDetected() http.HandlerFunc {
             return
         }
 
-        // TODO: Hapus gambar terkait dari disk dan tabel images sebelum menghapus record detected.
-        // 1. GetDetectedByID untuk mendapatkan PersonImageID dan MotorcycleImageID.
-        // 2. Jika ID valid, panggil s.deleteImageRecordAndFile (atau helper serupa) untuk masing-masing.
-        // 3. Lakukan semua ini dalam transaksi.
-
-        if err := database.DeleteDetected(r.Context(), s.db.Get(), id); err != nil {
-            if errors.Is(err, sql.ErrNoRows) || err.Error() == "no detected record deleted or record not found" {
+        // Ambil data detected untuk mendapatkan ID gambar-gambar terkait.
+        detectedData, err := database.GetDetectedByID(r.Context(), s.db.Get(), id)
+        if err != nil {
+            if errors.Is(err, sql.ErrNoRows) {
                 writeJSONError(w, "Detected record not found", http.StatusNotFound)
-            } else {
-                writeJSONError(w, "Failed to delete detected record: "+err.Error(), http.StatusInternalServerError)
+                return
             }
+            writeJSONError(w, "Failed to retrieve detected record: "+err.Error(), http.StatusInternalServerError)
             return
         }
+
+        // Mulai transaksi untuk memastikan semua operasi DB atomik.
+        tx, err := s.db.Get().BeginTx(r.Context(), nil)
+        if err != nil {
+            writeJSONError(w, "Failed to start transaction: "+err.Error(), http.StatusInternalServerError)
+            return
+        }
+        defer tx.Rollback() // Rollback otomatis jika terjadi error sebelum commit.
+
+        // Hapus record 'detected' utama.
+        if err := database.DeleteDetectedTx(r.Context(), tx, id); err != nil {
+            writeJSONError(w, "Failed to delete detected record from DB: "+err.Error(), http.StatusInternalServerError)
+            return
+        }
+
+        // Kumpulkan path file yang akan dihapus dari disk.
+        var imagePathsToDelete []string
+
+        // Hapus record person_image dan dapatkan path-nya.
+        if detectedData.PersonImageID.Valid {
+            path, err := database.GetImageStoragePathAndDeleteTx(r.Context(), tx, detectedData.PersonImageID.Int64)
+            if err != nil {
+                // Jika ada error di sini, transaksi akan di-rollback oleh defer.
+                writeJSONError(w, "Failed to process person image deletion: "+err.Error(), http.StatusInternalServerError)
+                return
+            }
+            if path != "" {
+                imagePathsToDelete = append(imagePathsToDelete, path)
+            }
+        }
+
+        // Hapus record motorcycle_image dan dapatkan path-nya.
+        if detectedData.MotorcycleImageID.Valid {
+            path, err := database.GetImageStoragePathAndDeleteTx(r.Context(), tx, detectedData.MotorcycleImageID.Int64)
+            if err != nil {
+                writeJSONError(w, "Failed to process motorcycle image deletion: "+err.Error(), http.StatusInternalServerError)
+                return
+            }
+            if path != "" {
+                imagePathsToDelete = append(imagePathsToDelete, path)
+            }
+        }
+
+        // Jika semua operasi DB berhasil, commit transaksi.
+        if err := tx.Commit(); err != nil {
+            writeJSONError(w, "Failed to commit transaction: "+err.Error(), http.StatusInternalServerError)
+            return
+        }
+
+        // HANYA SETELAH DB BERHASIL, hapus file dari disk di latar belakang.
+        go func() {
+            for _, path := range imagePathsToDelete {
+                if err := os.Remove(path); err != nil {
+                    log.Printf("WARN: DB records deleted, but failed to delete image file on disk: %s. Error: %v", path, err)
+                }
+            }
+        }()
+
         w.WriteHeader(http.StatusNoContent)
     }
 }
