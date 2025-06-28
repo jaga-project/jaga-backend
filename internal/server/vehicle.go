@@ -20,10 +20,9 @@ import (
 	"github.com/jaga-project/jaga-backend/internal/middleware"
 )
 
-const maxFileSizeVehicle = 5 * 1024 * 1024       // 5 MB per file (STNK, KK)
-const extraFormDataSizeVehicle = 1 * 1024 * 1024 // 1MB untuk field teks lainnya
+const maxFileSizeVehicle = 5 * 1024 * 1024       
+const extraFormDataSizeVehicle = 5 * 1024 * 1024 
 
-// VehicleResponse adalah struct untuk respons JSON dengan URL gambar.
 type VehicleResponse struct {
     VehicleID    int64                   `json:"vehicle_id"`
     VehicleName  string                  `json:"vehicle_name"`
@@ -35,7 +34,6 @@ type VehicleResponse struct {
     Ownership    *database.OwnershipType `json:"ownership,omitempty"`
 }
 
-// Helper untuk mengubah database.Vehicle menjadi VehicleResponse
 func (s *Server) toVehicleResponse(ctx context.Context, dbQuerier database.Querier, v *database.Vehicle) VehicleResponse {
     response := VehicleResponse{
         VehicleID:   v.VehicleID,
@@ -43,7 +41,7 @@ func (s *Server) toVehicleResponse(ctx context.Context, dbQuerier database.Queri
         Color:       v.Color,
         UserID:      v.UserID,
         PlateNumber: v.PlateNumber,
-        //Ownership:   v.Ownership,
+        // Ownership:   v.Ownership,
     }
 
 		if v.Ownership.Valid {
@@ -144,7 +142,12 @@ func (s *Server) handleCreateVehicle() http.HandlerFunc {
             stnkImageID, tempPath, errUpload := s.uploadAndCreateImageRecord(r.Context(), tx, stnkFile, stnkHandler, "stnk_image", maxFileSizeVehicle)
             if errUpload != nil {
                 txErr = fmt.Errorf("failed to process stnk_image: %w", errUpload)
-                writeJSONError(w, txErr.Error(), determineImageUploadErrorStatusCode(errUpload))
+                statusCode := http.StatusInternalServerError
+                errMsg := strings.ToLower(errUpload.Error())
+                if strings.Contains(errMsg, "file is empty") || strings.Contains(errMsg, "exceeds") || strings.Contains(errMsg, "invalid type") || strings.Contains(errMsg, "mime type validation failed") {
+                    statusCode = http.StatusBadRequest
+                }
+                writeJSONError(w, txErr.Error(), statusCode)
                 return
             }
             newVehicleDB.STNKImageID = stnkImageID
@@ -161,7 +164,12 @@ func (s *Server) handleCreateVehicle() http.HandlerFunc {
             kkImageID, tempPath, errUpload := s.uploadAndCreateImageRecord(r.Context(), tx, kkFile, kkHandler, "kk_image", maxFileSizeVehicle)
             if errUpload != nil {
                 txErr = fmt.Errorf("failed to process kk_image: %w", errUpload)
-                writeJSONError(w, txErr.Error(), determineImageUploadErrorStatusCode(errUpload))
+                statusCode := http.StatusInternalServerError
+                errMsg := strings.ToLower(errUpload.Error())
+                if strings.Contains(errMsg, "file is empty") || strings.Contains(errMsg, "exceeds") || strings.Contains(errMsg, "invalid type") || strings.Contains(errMsg, "mime type validation failed") {
+                    statusCode = http.StatusBadRequest
+                }
+                writeJSONError(w, txErr.Error(), statusCode)
                 return
             }
             newVehicleDB.KKImageID = kkImageID
@@ -371,7 +379,7 @@ func (s *Server) handleUpdateVehicle() http.HandlerFunc {
         db := s.db.Get()
         existingVehicle, err := database.GetVehicleByID(r.Context(), db, id)
         if err != nil {
-            if errors.Is(err, sql.ErrNoRows) || err.Error() == "vehicle not found" {
+            if errors.Is(err, sql.ErrNoRows) {
                 writeJSONError(w, "Vehicle not found", http.StatusNotFound)
             } else {
                 writeJSONError(w, "Failed to retrieve existing vehicle", http.StatusInternalServerError)
@@ -386,34 +394,28 @@ func (s *Server) handleUpdateVehicle() http.HandlerFunc {
             return
         }
 
-        vehicleToUpdate := *existingVehicle
-        changed := false
+        // Peta untuk menampung kolom yang akan diupdate.
+        updates := make(map[string]interface{})
 
-        if val := r.FormValue("vehicle_name"); val != "" && val != vehicleToUpdate.VehicleName {
-            vehicleToUpdate.VehicleName = val
-            changed = true
+        // Cek setiap field dari form. Jika ada, tambahkan ke map 'updates'.
+        if val, ok := r.Form["vehicle_name"]; ok {
+            updates["vehicle_name"] = val[0]
         }
-        if val := r.FormValue("color"); val != "" && val != vehicleToUpdate.Color {
-            vehicleToUpdate.Color = val
-            changed = true
+        if val, ok := r.Form["color"]; ok {
+            updates["color"] = val[0]
         }
-        if val := r.FormValue("plate_number"); val != "" && val != vehicleToUpdate.PlateNumber {
-            vehicleToUpdate.PlateNumber = val
-            changed = true
+        if val, ok := r.Form["plate_number"]; ok {
+            updates["plate_number"] = val[0]
         }
-        if ownershipStr := r.FormValue("ownership"); ownershipStr != "" {
-            currentOwnership := ""
-            if vehicleToUpdate.Ownership.Valid {
-                currentOwnership = vehicleToUpdate.Ownership.String
-            }
-            if ownershipStr != currentOwnership {
-                if ownershipStr == string(database.OwnershipPribadi) || ownershipStr == string(database.OwnershipKeluarga) {
-                    vehicleToUpdate.Ownership = sql.NullString{String: ownershipStr, Valid: true}
-                    changed = true
-                } else {
-                    writeJSONError(w, fmt.Sprintf("Invalid ownership value. Must be '%s' or '%s'", database.OwnershipPribadi, database.OwnershipKeluarga), http.StatusBadRequest)
-                    return
-                }
+        if val, ok := r.Form["ownership"]; ok {
+            ownershipStr := val[0]
+            if ownershipStr == string(database.OwnershipPribadi) || ownershipStr == string(database.OwnershipKeluarga) {
+                updates["ownership"] = ownershipStr
+            } else if ownershipStr == "" {
+                updates["ownership"] = nil // Mengizinkan untuk set ke NULL
+            } else {
+                writeJSONError(w, fmt.Sprintf("Invalid ownership value. Must be '%s', '%s', or empty", database.OwnershipPribadi, database.OwnershipKeluarga), http.StatusBadRequest)
+                return
             }
         }
 
@@ -440,18 +442,18 @@ func (s *Server) handleUpdateVehicle() http.HandlerFunc {
             }
         }()
 
+        // Logika untuk upload gambar baru dan menambahkannya ke map 'updates'
         stnkFile, stnkHandler, errSTNK := r.FormFile("stnk_image")
         if errSTNK == nil {
             defer stnkFile.Close()
             stnkImageID, tempPath, errUpload := s.uploadAndCreateImageRecord(r.Context(), tx, stnkFile, stnkHandler, "stnk_image", maxFileSizeVehicle)
             if errUpload != nil {
                 txErr = fmt.Errorf("failed to process new stnk_image: %w", errUpload)
-                writeJSONError(w, txErr.Error(), determineImageUploadErrorStatusCode(errUpload))
+                writeJSONError(w, txErr.Error(), http.StatusBadRequest)
                 return
             }
-            vehicleToUpdate.STNKImageID = stnkImageID
+            updates["stnk_image_id"] = stnkImageID.Int64
             newStnkImageStoragePath = tempPath
-            changed = true
         } else if errSTNK != http.ErrMissingFile {
             txErr = fmt.Errorf("error retrieving stnk_image for update: %w", errSTNK)
             writeJSONError(w, txErr.Error(), http.StatusBadRequest)
@@ -464,27 +466,25 @@ func (s *Server) handleUpdateVehicle() http.HandlerFunc {
             kkImageID, tempPath, errUpload := s.uploadAndCreateImageRecord(r.Context(), tx, kkFile, kkHandler, "kk_image", maxFileSizeVehicle)
             if errUpload != nil {
                 txErr = fmt.Errorf("failed to process new kk_image: %w", errUpload)
-                writeJSONError(w, txErr.Error(), determineImageUploadErrorStatusCode(errUpload))
+                writeJSONError(w, txErr.Error(), http.StatusBadRequest)
                 return
             }
-            vehicleToUpdate.KKImageID = kkImageID
+            updates["kk_image_id"] = kkImageID.Int64
             newKkImageStoragePath = tempPath
-            changed = true
         } else if errKK != http.ErrMissingFile {
             txErr = fmt.Errorf("error retrieving kk_image for update: %w", errKK)
             writeJSONError(w, txErr.Error(), http.StatusBadRequest)
             return
         }
 
-        if !changed && newStnkImageStoragePath == "" && newKkImageStoragePath == "" {
+        if len(updates) == 0 {
             writeJSONError(w, "No changes provided for update", http.StatusBadRequest)
-            // Tidak perlu rollback karena transaksi belum melakukan apa-apa
             return
         }
 
-        txErr = database.UpdateVehicleTx(r.Context(), tx, id, &vehicleToUpdate)
+        txErr = database.UpdateVehicleTx(r.Context(), tx, id, updates)
         if txErr != nil {
-            if errors.Is(txErr, sql.ErrNoRows) || strings.Contains(txErr.Error(), "no vehicle record updated") || strings.Contains(txErr.Error(), "no fields provided for vehicle update") {
+            if errors.Is(txErr, sql.ErrNoRows) {
                 writeJSONError(w, "Vehicle not found or no effective changes made", http.StatusNotFound)
             } else {
                 writeJSONError(w, "Failed to update vehicle: "+txErr.Error(), http.StatusInternalServerError)
@@ -492,12 +492,13 @@ func (s *Server) handleUpdateVehicle() http.HandlerFunc {
             return
         }
 
-        if vehicleToUpdate.STNKImageID.Valid && oldStnkImageID.Valid && vehicleToUpdate.STNKImageID.Int64 != oldStnkImageID.Int64 {
-            if errDel := s.deleteImageRecordAndFile(r.Context(), tx, oldStnkImageID.Int64); errDel != nil {
+        // Hapus file lama HANYA JIKA file baru berhasil diupload dan diupdate
+        if _, ok := updates["stnk_image_id"]; ok && oldStnkImageID.Valid {
+             if errDel := s.deleteImageRecordAndFile(r.Context(), tx, oldStnkImageID.Int64); errDel != nil {
                 fmt.Printf("WARN: Failed to delete old STNK image (ID: %d) after update: %v\n", oldStnkImageID.Int64, errDel)
             }
         }
-        if vehicleToUpdate.KKImageID.Valid && oldKkImageID.Valid && vehicleToUpdate.KKImageID.Int64 != oldKkImageID.Int64 {
+        if _, ok := updates["kk_image_id"]; ok && oldKkImageID.Valid {
             if errDel := s.deleteImageRecordAndFile(r.Context(), tx, oldKkImageID.Int64); errDel != nil {
                 fmt.Printf("WARN: Failed to delete old KK image (ID: %d) after update: %v\n", oldKkImageID.Int64, errDel)
             }
@@ -511,7 +512,7 @@ func (s *Server) handleUpdateVehicle() http.HandlerFunc {
 
         updatedVehicleDB, errGet := database.GetVehicleByID(r.Context(), db, id)
         if errGet != nil {
-            writeJSONError(w, "Vehicle updated successfully, but failed to retrieve updated data with image URLs.", http.StatusInternalServerError)
+            writeJSONError(w, "Vehicle updated successfully, but failed to retrieve updated data.", http.StatusInternalServerError)
             return
         }
         response := s.toVehicleResponse(r.Context(), db, updatedVehicleDB)
@@ -648,11 +649,13 @@ func (s *Server) deleteImageRecordAndFile(ctx context.Context, tx *sql.Tx, image
 }
 
 func (s *Server) RegisterVehicleRoutes(r *mux.Router) {
+    adminOnlyMiddleware := middleware.AdminOnlyMiddleware()
+    r.Handle("/vehicles", adminOnlyMiddleware(s.handleGetVehicle())).Methods("GET")
+    r.Handle("/vehicles/plate/{plate_number}", adminOnlyMiddleware( s.handleGetVehicleByPlate())).Methods("GET")
+    r.Handle("/vehicles/{id:[0-9]+}", adminOnlyMiddleware(s.handleGetVehicle())).Methods("GET")
+    
     r.HandleFunc("/vehicles", s.handleCreateVehicle()).Methods("POST")
-    r.HandleFunc("/vehicles", s.handleGetVehicle()).Methods("GET")
 	r.HandleFunc("/vehicles/my", s.handleGetUserVehicles()).Methods("GET")
-    r.HandleFunc("/vehicles/{id:[0-9]+}", s.handleGetVehicle()).Methods("GET")
-    r.HandleFunc("/vehicles/plate/{plate_number}", s.handleGetVehicleByPlate()).Methods("GET")
     r.HandleFunc("/vehicles/{id:[0-9]+}", s.handleUpdateVehicle()).Methods("PUT")
     r.HandleFunc("/vehicles/{id:[0-9]+}", s.handleDeleteVehicle()).Methods("DELETE")
 }
