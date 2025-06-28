@@ -88,15 +88,8 @@ func (s *Server) handleLogin() http.HandlerFunc {
 	}
 }
 
-// RegisterAuthRoutes mendaftarkan rute untuk autentikasi.
 func (s *Server) RegisterAuthRoutes(r *mux.Router) {
 	r.HandleFunc("/auth/login", s.handleLogin()).Methods("POST")
-
-	// Rute registrasi user (handleCreateUser) bisa tetap di RegisterUserRoutes
-	// atau dipindahkan ke sini jika Anda ingin semua yang terkait auth ada di satu tempat.
-	// Jika tetap di RegisterUserRoutes, pastikan itu adalah rute publik.
-	// Contoh:
-	// r.HandleFunc("/users", s.handleCreateUser()).Methods("POST") // Endpoint registrasi publik
 }
 
 
