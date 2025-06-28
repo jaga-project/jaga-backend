@@ -8,7 +8,6 @@ import (
 	"time"
 )
 
-// Suspect struct diubah untuk menggunakan PersonScore dan MotorScore
 type Suspect struct {
 	SuspectID   int64     `json:"suspect_id"`
 	DetectedID  int64     `json:"detected_id"`
@@ -19,7 +18,6 @@ type Suspect struct {
 	CreatedAt   time.Time `json:"created_at"`
 }
 
-// SuspectResult struct diubah untuk menyertakan semua field yang relevan
 type SuspectResult struct {
 	SuspectID         int64
 	PersonScore       float64
@@ -33,7 +31,6 @@ type SuspectResult struct {
 	CameraLongitude   float64
 }
 
-// GetSuspectsByLostReportID diubah untuk mengurutkan berdasarkan final_score
 func GetSuspectsByLostReportID(ctx context.Context, db *sql.DB, lostReportID int) ([]SuspectResult, error) {
 	query := `
         SELECT
@@ -88,11 +85,20 @@ func GetSuspectsByLostReportID(ctx context.Context, db *sql.DB, lostReportID int
 	return results, nil
 }
 
-// CreateSuspect diubah untuk menyimpan skor baru
 func CreateSuspect(ctx context.Context, db *sql.DB, s *Suspect) error {
 	query := `INSERT INTO suspect (detected_id, lost_id, person_score, motor_score, final_score, created_at)
               VALUES ($1, $2, $3, $4, $5, $6) RETURNING suspect_id`
 	return db.QueryRowContext(ctx, query, s.DetectedID, s.LostID, s.PersonScore, s.MotorScore, s.FinalScore, s.CreatedAt).Scan(&s.SuspectID)
+}
+
+func CreateSuspectTx(ctx context.Context, tx *sql.Tx, s *Suspect) error {
+    query := `INSERT INTO suspects (lost_id, detected_id, person_score, motor_score, final_score, created_at)
+              VALUES ($1, $2, $3, $4, $5, $6) RETURNING suspect_id`
+    err := tx.QueryRowContext(ctx, query, s.LostID, s.DetectedID, s.PersonScore, s.MotorScore, s.FinalScore, s.CreatedAt).Scan(&s.SuspectID)
+    if err != nil {
+        return fmt.Errorf("error creating suspect in transaction: %w", err)
+    }
+    return nil
 }
 
 func CreateManySuspects(ctx context.Context, db *sql.DB, suspects []*Suspect) error {
@@ -128,7 +134,6 @@ func CreateManySuspects(ctx context.Context, db *sql.DB, suspects []*Suspect) er
     return tx.Commit()
 }
 
-// GetSuspectByID diubah untuk mengambil skor baru
 func GetSuspectByID(ctx context.Context, db *sql.DB, id int64) (*Suspect, error) {
 	var s Suspect
 	query := `SELECT suspect_id, detected_id, lost_id, person_score, motor_score, final_score, created_at FROM suspect WHERE suspect_id = $1`
@@ -142,7 +147,6 @@ func GetSuspectByID(ctx context.Context, db *sql.DB, id int64) (*Suspect, error)
 	return &s, nil
 }
 
-// ListSuspects diubah untuk mengambil skor baru
 func ListSuspects(ctx context.Context, db *sql.DB) ([]Suspect, error) {
 	query := `SELECT suspect_id, detected_id, lost_id, person_score, motor_score, final_score, created_at FROM suspect ORDER BY created_at DESC`
 	rows, err := db.QueryContext(ctx, query)
@@ -162,7 +166,6 @@ func ListSuspects(ctx context.Context, db *sql.DB) ([]Suspect, error) {
 	return list, nil
 }
 
-// UpdateSuspect diubah untuk memperbarui skor baru
 func UpdateSuspect(ctx context.Context, db *sql.DB, id int64, s *Suspect) error {
 	query := `UPDATE suspect SET detected_id=$1, lost_id=$2, person_score=$3, motor_score=$4, final_score=$5 WHERE suspect_id=$6`
 	res, err := db.ExecContext(ctx, query, s.DetectedID, s.LostID, s.PersonScore, s.MotorScore, s.FinalScore, id)
@@ -176,7 +179,6 @@ func UpdateSuspect(ctx context.Context, db *sql.DB, id int64, s *Suspect) error 
 	return err
 }
 
-// DeleteSuspect tidak perlu diubah
 func DeleteSuspect(ctx context.Context, db *sql.DB, id int64) error {
 	res, err := db.ExecContext(ctx, `DELETE FROM suspect WHERE suspect_id = $1`, id)
 	if err != nil {

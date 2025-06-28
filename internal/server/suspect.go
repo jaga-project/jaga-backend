@@ -7,12 +7,13 @@ import (
 	"net/http"
 	"strconv"
 	"time"
+	"sync"
 
 	"github.com/gorilla/mux"
 	"github.com/jaga-project/jaga-backend/internal/database"
+	"github.com/jaga-project/jaga-backend/internal/middleware"
 )
 
-// handleCreateSuspect menangani pembuatan satu data suspect.
 func (s *Server) handleCreateSuspect() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var suspect database.Suspect
@@ -32,41 +33,65 @@ func (s *Server) handleCreateSuspect() http.HandlerFunc {
 	}
 }
 
-// handleCreateManySuspects menangani pembuatan banyak suspect sekaligus (batch).
 func (s *Server) handleCreateManySuspects() http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		var suspects []*database.Suspect
-		if err := json.NewDecoder(r.Body).Decode(&suspects); err != nil {
-			writeJSONError(w, "Invalid request body: expected an array of suspects", http.StatusBadRequest)
-			return
-		}
+    return func(w http.ResponseWriter, r *http.Request) {
+        var suspects []*database.Suspect
+        if err := json.NewDecoder(r.Body).Decode(&suspects); err != nil {
+            writeJSONError(w, "Invalid request body: expected an array of suspects", http.StatusBadRequest)
+            return
+        }
 
-		if len(suspects) == 0 {
-			writeJSONError(w, "Request body must contain at least one suspect", http.StatusBadRequest)
-			return
-		}
+        if len(suspects) == 0 {
+            writeJSONError(w, "Request body must contain at least one suspect", http.StatusBadRequest)
+            return
+        }
 
-		// Setel waktu pembuatan untuk setiap suspect
-		now := time.Now()
-		for _, suspect := range suspects {
-			suspect.CreatedAt = now
-		}
+        tx, err := s.db.Get().BeginTx(r.Context(), nil)
+        if err != nil {
+            log.Printf("ERROR: Failed to begin transaction for batch suspect creation: %v", err)
+            writeJSONError(w, "Failed to start database transaction", http.StatusInternalServerError)
+            return
+        }
+        defer tx.Rollback()
 
-		// Panggil fungsi database untuk membuat banyak data sekaligus
-		err := database.CreateManySuspects(r.Context(), s.db.Get(), suspects)
-		if err != nil {
-			log.Printf("ERROR: Failed to create many suspects: %v", err)
-			writeJSONError(w, fmt.Sprintf("Failed to create suspects in database: %v", err), http.StatusInternalServerError)
-			return
-		}
+        var wg sync.WaitGroup
+        errChan := make(chan error, len(suspects))
+        now := time.Now()
 
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusCreated)
-		json.NewEncoder(w).Encode(map[string]string{"message": fmt.Sprintf("%d suspects created successfully", len(suspects))})
-	}
+        for _, suspect := range suspects {
+            wg.Add(1)
+            go func(sp *database.Suspect) {
+                defer wg.Done()
+                sp.CreatedAt = now
+                if err := database.CreateSuspectTx(r.Context(), tx, sp); err != nil {
+                    errChan <- err
+                }
+            }(suspect)
+        }
+
+        wg.Wait()
+        close(errChan)
+
+        for err := range errChan {
+            if err != nil {
+                log.Printf("ERROR: Failed to create a suspect in batch: %v", err)
+                writeJSONError(w, fmt.Sprintf("Failed to create one or more suspects: %v", err), http.StatusInternalServerError)
+                return
+            }
+        }
+
+        if err := tx.Commit(); err != nil {
+            log.Printf("ERROR: Failed to commit transaction for batch suspect creation: %v", err)
+            writeJSONError(w, "Failed to commit transaction", http.StatusInternalServerError)
+            return
+        }
+
+        w.Header().Set("Content-Type", "application/json")
+        w.WriteHeader(http.StatusCreated)
+        json.NewEncoder(w).Encode(map[string]string{"message": fmt.Sprintf("%d suspects created successfully", len(suspects))})
+    }
 }
 
-// handleListSuspects menangani permintaan untuk melihat semua data suspect.
 func (s *Server) handleListSuspects() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		list, err := database.ListSuspects(r.Context(), s.db.Get())
@@ -80,7 +105,6 @@ func (s *Server) handleListSuspects() http.HandlerFunc {
 	}
 }
 
-// handleGetSuspectByID menangani permintaan untuk melihat satu suspect berdasarkan ID.
 func (s *Server) handleGetSuspectByID() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		idStr := mux.Vars(r)["id"]
@@ -105,7 +129,6 @@ func (s *Server) handleGetSuspectByID() http.HandlerFunc {
 	}
 }
 
-// handleUpdateSuspect menangani pembaruan data suspect.
 func (s *Server) handleUpdateSuspect() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		idStr := mux.Vars(r)["id"]
@@ -132,7 +155,6 @@ func (s *Server) handleUpdateSuspect() http.HandlerFunc {
 	}
 }
 
-// handleDeleteSuspect menangani penghapusan data suspect.
 func (s *Server) handleDeleteSuspect() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		idStr := mux.Vars(r)["id"]
@@ -150,13 +172,14 @@ func (s *Server) handleDeleteSuspect() http.HandlerFunc {
 	}
 }
 
-// RegisterSuspectRoutes mendaftarkan semua rute yang berhubungan dengan suspect.
 func (s *Server) RegisterSuspectRoutes(r *mux.Router) {
-	r.HandleFunc("/suspects", s.handleCreateSuspect()).Methods("POST")
-	r.HandleFunc("/suspects/batch", s.handleCreateManySuspects()).Methods("POST")
-	r.HandleFunc("/suspects", s.handleListSuspects()).Methods("GET")
-	r.HandleFunc("/suspects/{id:[0-9]+}", s.handleGetSuspectByID()).Methods("GET")
-	r.HandleFunc("/suspects/{id:[0-9]+}", s.handleUpdateSuspect()).Methods("PUT")
-	r.HandleFunc("/suspects/{id:[0-9]+}", s.handleDeleteSuspect()).Methods("DELETE")
+	adminOnlyMiddleware := middleware.AdminOnlyMiddleware()
+
+	r.Handle("/suspects", adminOnlyMiddleware(s.handleCreateSuspect())).Methods("POST")
+	r.Handle("/suspects/batch", adminOnlyMiddleware(s.handleCreateManySuspects())).Methods("POST")
+	r.Handle("/suspects", adminOnlyMiddleware(s.handleListSuspects())).Methods("GET")
+	r.Handle("/suspects/{id:[0-9]+}", adminOnlyMiddleware(s.handleGetSuspectByID())).Methods("GET")
+	r.Handle("/suspects/{id:[0-9]+}", adminOnlyMiddleware(s.handleUpdateSuspect())).Methods("PUT")
+	r.Handle("/suspects/{id:[0-9]+}", adminOnlyMiddleware(s.handleDeleteSuspect())).Methods("DELETE")
 }
 
