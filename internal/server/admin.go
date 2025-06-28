@@ -7,9 +7,11 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"fmt"
 
 	"github.com/gorilla/mux"
 	"github.com/jaga-project/jaga-backend/internal/database"
+	"github.com/jaga-project/jaga-backend/internal/middleware"
 )
 
 func (s *Server) handleCreateAdmin() http.HandlerFunc {
@@ -20,16 +22,21 @@ func (s *Server) handleCreateAdmin() http.HandlerFunc {
 			return
 		}
 
-		// Validasi 
 		if admin.UserID == "" {
 			writeJSONError(w, "user_id is required", http.StatusBadRequest)
 			return
 		}
 
 		admin.CreatedAt = time.Now()
+		tx, err := s.db.Get().BeginTx(r.Context(), nil)
+        if err != nil {
+            fmt.Printf("ERROR handleCreateDetected: Failed to start database transaction: %v\n", err)
+            writeJSONError(w, "Failed to start database transaction: "+err.Error(), http.StatusInternalServerError)
+            return
+        }
+		defer tx.Rollback()
 
-		if err := database.CreateAdmin(r.Context(), s.db.Get(), &admin); err != nil {
-			// Mungkin ada error karena duplikat user_id 
+		if err := database.CreateAdminTx(r.Context(), tx, &admin); err != nil {
 			if strings.Contains(err.Error(), "duplicate key value violates unique constraint") {
 				writeJSONError(w, "This user is already an admin", http.StatusConflict)
 				return
@@ -37,6 +44,10 @@ func (s *Server) handleCreateAdmin() http.HandlerFunc {
 			writeJSONError(w, "Failed to create admin: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
+		if err := tx.Commit(); err != nil {
+            writeJSONError(w, "Failed to commit transaction: "+err.Error(), http.StatusInternalServerError)
+            return
+    }
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
 		json.NewEncoder(w).Encode(admin)
@@ -45,7 +56,7 @@ func (s *Server) handleCreateAdmin() http.HandlerFunc {
 
 func (s *Server) handleGetAdmin() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		userID := mux.Vars(r)["user_id"] // Mengambil user_id dari path
+		userID := mux.Vars(r)["user_id"] 
 		if userID != "" {
 			admin, err := database.GetAdminByUserID(r.Context(), s.db.Get(), userID)
 			if err != nil {
@@ -81,15 +92,11 @@ func (s *Server) handleUpdateAdmin() http.HandlerFunc {
 			return
 		}
 
-		// Sebaiknya CreatedAt tidak diupdate, jadi kita abaikan dari payload
-		// Jika ingin update, logika bisa disesuaikan.
-
 		if err := database.UpdateAdmin(r.Context(), s.db.Get(), userID, &adminUpdates); err != nil {
 			writeJSONError(w, "Failed to update admin: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
 
-		// Ambil data terbaru untuk dikirim sebagai respons
 		updatedAdmin, err := database.GetAdminByUserID(r.Context(), s.db.Get(), userID)
 		if err != nil {
 			writeJSONError(w, "Failed to retrieve updated admin data: "+err.Error(), http.StatusInternalServerError)
@@ -103,20 +110,27 @@ func (s *Server) handleUpdateAdmin() http.HandlerFunc {
 }
 
 func (s *Server) handleDeleteAdmin() http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		userID := mux.Vars(r)["user_id"]
-		if err := database.DeleteAdmin(r.Context(), s.db.Get(), userID); err != nil {
-			writeJSONError(w, "Failed to delete admin: "+err.Error(), http.StatusInternalServerError)
-			return
-		}
-		w.WriteHeader(http.StatusNoContent)
-	}
+    return func(w http.ResponseWriter, r *http.Request) {
+        userID := mux.Vars(r)["user_id"]
+
+        if err := database.DeleteAdmin(r.Context(), s.db.Get(), userID); err != nil {
+            if errors.Is(err, sql.ErrNoRows) {
+                w.WriteHeader(http.StatusNoContent)
+                return
+            }
+            writeJSONError(w, "Failed to demote admin: "+err.Error(), http.StatusInternalServerError)
+            return
+        }
+
+        w.WriteHeader(http.StatusNoContent)
+    }
 }
 
 func (s *Server) RegisterAdminRoutes(r *mux.Router) {
-	r.HandleFunc("", s.handleCreateAdmin()).Methods("POST")
-	r.HandleFunc("", s.handleGetAdmin()).Methods("GET")
-	r.HandleFunc("/{user_id}", s.handleGetAdmin()).Methods("GET")
-	r.HandleFunc("/{user_id}", s.handleUpdateAdmin()).Methods("PUT")
-	r.HandleFunc("/{user_id}", s.handleDeleteAdmin()).Methods("DELETE")
+	adminOnlyMiddleware := middleware.AdminOnlyMiddleware()
+	r.Handle("/admins", adminOnlyMiddleware(s.handleCreateAdmin())).Methods("POST")
+	r.Handle("/admins", adminOnlyMiddleware(s.handleGetAdmin())).Methods("GET")
+	r.Handle("/admins/{user_id}", adminOnlyMiddleware(s.handleGetAdmin())).Methods("GET")
+	r.Handle("/admins/{user_id}", adminOnlyMiddleware(s.handleUpdateAdmin())).Methods("PUT")
+	r.Handle("/admins/{user_id}", adminOnlyMiddleware(s.handleDeleteAdmin())).Methods("DELETE")
 }

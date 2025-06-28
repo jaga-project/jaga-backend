@@ -20,18 +20,16 @@ func IsUserAdmin(db *sql.DB, userID string) (bool, error) {
     err := db.QueryRow(query, userID).Scan(&isAdmin)
     if err != nil {
         if err == sql.ErrNoRows {
-            // Ini seharusnya tidak terjadi dengan EXISTS, tapi untuk keamanan
             return false, nil
         }
-        // log.Printf("Error querying admin status for UserID %s: %v", userID, err) // Opsional: log error
         return false, fmt.Errorf("error checking admin status: %w", err)
     }
     return isAdmin, nil
 }
 
-func CreateAdmin(ctx context.Context, db *sql.DB, a *Admin) error {
+func CreateAdminTx(ctx context.Context, tx *sql.Tx, a *Admin) error {
     query := `INSERT INTO admins (user_id, admin_level, created_at) VALUES ($1, $2, $3)`
-    _, err := db.ExecContext(ctx, query, a.UserID, a.AdminLevel, a.CreatedAt)
+    _, err := tx.ExecContext(ctx, query, a.UserID, a.AdminLevel, a.CreatedAt)
     return err
 }
 
@@ -81,13 +79,33 @@ func UpdateAdmin(ctx context.Context, db *sql.DB, userID string, a *Admin) error
 }
 
 func DeleteAdmin(ctx context.Context, db *sql.DB, userID string) error {
-    res, err := db.ExecContext(ctx, `DELETE FROM admins WHERE user_id = $1`, userID)
+    query := `DELETE FROM admins WHERE user_id = $1`
+    res, err := db.ExecContext(ctx, query, userID)
     if err != nil {
-        return err
+        return fmt.Errorf("error deleting admin ID %s: %w", userID, err)
     }
     count, err := res.RowsAffected()
-    if err == nil && count == 0 {
-        return errors.New("no admin record deleted")
+    if err != nil {
+        return fmt.Errorf("error getting rows affected for admin ID %s delete: %w", userID, err)
     }
-    return err
+    if count == 0 {
+        return sql.ErrNoRows 
+    }
+    return nil
+}
+
+func DeleteAdminTx(ctx context.Context, tx *sql.Tx, userID string) error {
+    query := `DELETE FROM admins WHERE user_id = $1`
+    res, err := tx.ExecContext(ctx, query, userID)
+    if err != nil {
+        return fmt.Errorf("error executing delete for admin ID %s in tx: %w", userID, err)
+    }
+    count, err := res.RowsAffected()
+    if err != nil {
+        return fmt.Errorf("error getting rows affected for admin ID %s delete in tx: %w", userID, err)
+    }
+    if count == 0 {
+        return sql.ErrNoRows 
+    }
+    return nil
 }
