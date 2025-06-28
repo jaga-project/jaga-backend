@@ -11,33 +11,24 @@ import (
 type Detected struct {
 	DetectedID        int             `json:"detected_id"`
 	CameraID          int             `json:"camera_id"`
-	PersonImageID     sql.NullInt64   `json:"person_image_id,omitempty"`     // ID gambar deteksi orang
-	MotorcycleImageID sql.NullInt64   `json:"motorcycle_image_id,omitempty"` // ID gambar deteksi motor
+	PersonImageID     sql.NullInt64   `json:"person_image_id,omitempty"`     
+	MotorcycleImageID sql.NullInt64   `json:"motorcycle_image_id,omitempty"` 
 	Timestamp         time.Time       `json:"timestamp"`
 }
 
-// CreateDetected inserts a new detected record (original function, can be kept or removed if CreateDetectedTx is always used)
-func CreateDetected(ctx context.Context, db *sql.DB, d *Detected) error {
-	query := `INSERT INTO detected (camera_id, person_image_id, motorcycle_image_id, timestamp)
-              VALUES ($1, $2, $3, $4) RETURNING detected_id`
-	return db.QueryRowContext(ctx, query, d.CameraID, d.PersonImageID, d.MotorcycleImageID, d.Timestamp).Scan(&d.DetectedID)
-}
-
-// CreateDetectedTx inserts a new detected record within a transaction
 func CreateDetectedTx(ctx context.Context, tx *sql.Tx, d *Detected) error {
 	query := `INSERT INTO detected (camera_id, person_image_id, motorcycle_image_id, timestamp)
               VALUES ($1, $2, $3, $4) RETURNING detected_id`
 	return tx.QueryRowContext(ctx, query, d.CameraID, d.PersonImageID, d.MotorcycleImageID, d.Timestamp).Scan(&d.DetectedID)
 }
 
-// GetDetectedByID retrieves a detected record by ID
 func GetDetectedByID(ctx context.Context, db *sql.DB, id int) (*Detected, error) {
 	var d Detected
 	query := `SELECT detected_id, camera_id, person_image_id, motorcycle_image_id, timestamp 
               FROM detected WHERE detected_id = $1`
 	err := db.QueryRowContext(ctx, query, id).Scan(&d.DetectedID, &d.CameraID, &d.PersonImageID, &d.MotorcycleImageID, &d.Timestamp)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) { // Lebih baik menggunakan errors.Is
+		if errors.Is(err, sql.ErrNoRows) { 
 			return nil, errors.New("detected not found")
 		}
 		return nil, err
@@ -45,12 +36,11 @@ func GetDetectedByID(ctx context.Context, db *sql.DB, id int) (*Detected, error)
 	return &d, nil
 }
 
-// ListDetectedByTimestampRange retrieves detected records within a given timestamp range
 func ListDetectedByTimestampRange(ctx context.Context, db *sql.DB, startTime, endTime time.Time) ([]Detected, error) {
 	query := `SELECT detected_id, camera_id, person_image_id, motorcycle_image_id, timestamp 
               FROM detected 
               WHERE timestamp >= $1 AND timestamp <= $2 
-              ORDER BY timestamp DESC` // Atau ASC, sesuai kebutuhan
+              ORDER BY timestamp DESC` 
 
 	rows, err := db.QueryContext(ctx, query, startTime, endTime)
 	if err != nil {
@@ -72,10 +62,8 @@ func ListDetectedByTimestampRange(ctx context.Context, db *sql.DB, startTime, en
 	return detectedList, nil
 }
 
-// ListDetectedByCoordinates mengambil daftar deteksi dari kamera yang berada dalam radius tertentu (dalam kilometer)
-// dari sebuah titik koordinat yang diberikan.
 func ListDetectedByCoordinates(ctx context.Context, db *sql.DB, lat, lon, radiusKm float64) ([]Detected, error) {
-	// Query ini menggunakan rumus Haversine untuk menghitung jarak antara dua titik di permukaan bola.
+	// menggunakan rumus Haversine 
 	// 6371 adalah radius rata-rata Bumi dalam kilometer.
 	query := `
         SELECT d.detected_id, d.camera_id, d.person_image_id, d.motorcycle_image_id, d.timestamp
@@ -111,7 +99,6 @@ func ListDetectedByCoordinates(ctx context.Context, db *sql.DB, lat, lon, radius
 	return detectedList, nil
 }
 
-// ListDetectedByProximityAndTimestamp mengambil daftar deteksi dalam radius dari sebuah titik koordinat DAN dalam rentang waktu tertentu.
 func ListDetectedByProximityAndTimestamp(ctx context.Context, db *sql.DB, lat, lon, radiusKm float64, startTime, endTime time.Time) ([]Detected, error) {
 	// Query ini menggabungkan rumus Haversine untuk jarak dengan filter rentang waktu.
 	// 6371 adalah radius rata-rata Bumi dalam kilometer.
@@ -152,7 +139,6 @@ func ListDetectedByProximityAndTimestamp(ctx context.Context, db *sql.DB, lat, l
 	return detectedList, nil
 }
 
-// ListDetected retrieves all detected records (fungsi asli bisa tetap ada)
 func ListDetected(ctx context.Context, db *sql.DB) ([]Detected, error) {
 	query := `SELECT detected_id, camera_id, person_image_id, motorcycle_image_id, timestamp 
               FROM detected ORDER BY timestamp DESC`
@@ -176,7 +162,6 @@ func ListDetected(ctx context.Context, db *sql.DB) ([]Detected, error) {
 	return detectedList, nil
 }
 
-// UpdateDetected updates a detected record by ID
 func UpdateDetected(ctx context.Context, db *sql.DB, id int, d *Detected) error {
 	query := `UPDATE detected SET camera_id=$1, person_image_id=$2, motorcycle_image_id=$3, timestamp=$4 
               WHERE detected_id=$5`
@@ -194,23 +179,6 @@ func UpdateDetected(ctx context.Context, db *sql.DB, id int, d *Detected) error 
 	return nil
 }
 
-// DeleteDetected deletes a detected record by ID
-func DeleteDetected(ctx context.Context, db *sql.DB, id int) error {
-	res, err := db.ExecContext(ctx, `DELETE FROM detected WHERE detected_id=$1`, id)
-	if err != nil {
-		return err
-	}
-	count, err := res.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if count == 0 {
-		return errors.New("no detected record deleted or record not found")
-	}
-	return nil
-}
-
-// DeleteDetectedTx deletes a detected record from the database within a given transaction.
 func DeleteDetectedTx(ctx context.Context, tx *sql.Tx, id int) error {
     query := `DELETE FROM detected WHERE detected_id = $1`
     res, err := tx.ExecContext(ctx, query, id)
@@ -224,8 +192,6 @@ func DeleteDetectedTx(ctx context.Context, tx *sql.Tx, id int) error {
     }
 
     if count == 0 {
-        // Menggunakan sql.ErrNoRows konsisten dengan error saat Get tidak menemukan apa-apa.
-        // Ini menandakan bahwa tidak ada baris yang dihapus.
         return sql.ErrNoRows
     }
     return nil

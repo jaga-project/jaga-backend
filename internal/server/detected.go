@@ -1,10 +1,10 @@
 package server
 
 import (
-	"context" // Ditambahkan untuk toDetectedResponse
+	"context" 
 	"database/sql"
 	"encoding/json"
-	"errors" // Ditambahkan untuk errors.Is
+	"errors" 
 	"fmt"
 	"io"
 	"log"
@@ -12,17 +12,17 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
-	"strings" // Ditambahkan untuk toDetectedResponse
+	"strings" 
 	"sync"
 	"time"
 
 	"github.com/gorilla/mux"
 	"github.com/jaga-project/jaga-backend/internal/database"
+    "github.com/jaga-project/jaga-backend/internal/middleware"
 )
 
 const maxFileSizeDetected = 5 * 1024 * 1024 // 5 MB
 
-// DetectedResponse adalah struct untuk respons JSON dengan URL gambar.
 type DetectedResponse struct {
     DetectedID        int       `json:"detected_id"`
     CameraID          int       `json:"camera_id"`
@@ -31,7 +31,6 @@ type DetectedResponse struct {
     MotorcycleImageURL *string  `json:"motorcycle_image_url,omitempty"`
 }
 
-// Helper untuk mengubah database.Detected menjadi DetectedResponse
 func (s *Server) toDetectedResponse(ctx context.Context, dbQuerier database.Querier, d *database.Detected) DetectedResponse {
     response := DetectedResponse{
         DetectedID: d.DetectedID,
@@ -203,14 +202,13 @@ func (s *Server) handleCreateDetected() http.HandlerFunc {
             }
         }()
 
-        // Tunggu kedua goroutine selesai
         wg.Wait()
-        close(errChan) // Tutup setelah semua goroutine selesai
+        close(errChan) 
 
         // Periksa error
         for err := range errChan {
             if err != nil {
-                txErr = err // Set txErr agar defer bisa rollback dan hapus file
+                txErr = err 
                 statusCode := http.StatusInternalServerError
                 errMsg := strings.ToLower(err.Error())
                 if strings.Contains(errMsg, "file is empty") ||
@@ -608,11 +606,12 @@ func (s *Server) handleDeleteDetected() http.HandlerFunc {
     }
 }
 
-// RegisterDetectedRoutes registers all detected-related routes
 func (s *Server) RegisterDetectedRoutes(r *mux.Router) {
-    r.HandleFunc("/detected", s.handleCreateDetected()).Methods("POST")
-    r.HandleFunc("/detected", s.handleGetDetected()).Methods("GET")
-    r.HandleFunc("/detected/{id:[0-9]+}", s.handleGetDetected()).Methods("GET")
-    r.HandleFunc("/detected/{id:[0-9]+}", s.handleUpdateDetected()).Methods("PUT")
-    r.HandleFunc("/detected/{id:[0-9]+}", s.handleDeleteDetected()).Methods("DELETE")
+    adminOnlyMiddleware := middleware.AdminOnlyMiddleware()
+
+    r.Handle("/detected", adminOnlyMiddleware(s.handleCreateDetected())).Methods("POST")
+    r.Handle("/detected", adminOnlyMiddleware(s.handleGetDetected())).Methods("GET")
+    r.Handle("/detected/{id:[0-9]+}", adminOnlyMiddleware(s.handleGetDetected())).Methods("GET")
+    r.Handle("/detected/{id:[0-9]+}", adminOnlyMiddleware(s.handleUpdateDetected())).Methods("PUT")
+    r.Handle("/detected/{id:[0-9]+}", adminOnlyMiddleware(s.handleDeleteDetected())).Methods("DELETE")
 }
