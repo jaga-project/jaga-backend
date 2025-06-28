@@ -7,11 +7,11 @@ import (
 )
 
 type Camera struct {
-    CameraID  int64   `json:"camera_id"` // serial
+    CameraID  int64   `json:"camera_id"` 
     Name      string  `json:"name"`
     IPCamera  string  `json:"ip_camera"`
-    Latitude  float64 `json:"latitude"`   // Perubahan dari location
-    Longitude float64 `json:"longitude"`  // Perubahan dari location
+    Latitude  float64 `json:"latitude"`   
+    Longitude float64 `json:"longitude"`  
     Address   string  `json:"address"`
     IsActive  bool    `json:"is_active"`
 }

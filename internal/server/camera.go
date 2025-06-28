@@ -17,12 +17,10 @@ func (s *Server) handleCreateCamera() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var cam database.Camera
 		if err := json.NewDecoder(r.Body).Decode(&cam); err != nil {
-			// Error ini sekarang lebih spesifik untuk format JSON yang salah
 			writeJSONError(w, "Invalid JSON format: "+err.Error(), http.StatusBadRequest)
 			return
 		}
 
-		// --- Validasi Input ---
 		validationErrors := make(map[string]string)
 		if strings.TrimSpace(cam.Name) == "" {
 			validationErrors["name"] = "Name field is required and cannot be empty."
@@ -30,7 +28,6 @@ func (s *Server) handleCreateCamera() http.HandlerFunc {
 		if strings.TrimSpace(cam.IPCamera) == "" {
 			validationErrors["ip_camera"] = "IP Camera field is required and cannot be empty."
 		}
-		// Validasi jangkauan untuk koordinat geografis
 		if cam.Latitude < -90 || cam.Latitude > 90 {
 			validationErrors["latitude"] = "Latitude must be between -90 and 90."
 		}
@@ -47,7 +44,6 @@ func (s *Server) handleCreateCamera() http.HandlerFunc {
 			})
 			return
 		}
-		// --- Akhir Validasi Input ---
 
 		if err := database.CreateCamera(r.Context(), s.db.Get(), &cam); err != nil {
 			writeJSONError(w, "Failed to create camera: "+err.Error(), http.StatusInternalServerError)
@@ -59,7 +55,6 @@ func (s *Server) handleCreateCamera() http.HandlerFunc {
 	}
 }
 
-// handleListCameras untuk mengambil semua kamera.
 func (s *Server) handleListCameras() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		list, err := database.ListCameras(r.Context(), s.db.Get())
@@ -72,7 +67,6 @@ func (s *Server) handleListCameras() http.HandlerFunc {
 	}
 }
 
-// handleGetCameraByID untuk mengambil satu kamera berdasarkan ID.
 func (s *Server) handleGetCameraByID() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		idStr := mux.Vars(r)["id"]
@@ -109,7 +103,6 @@ func (s *Server) handleUpdateCamera() http.HandlerFunc {
 			return
 		}
 
-		// --- Validasi Input ---
 		validationErrors := make(map[string]string)
 		if strings.TrimSpace(cam.Name) == "" {
 			validationErrors["name"] = "Name field is required and cannot be empty."
@@ -133,7 +126,6 @@ func (s *Server) handleUpdateCamera() http.HandlerFunc {
 			})
 			return
 		}
-		// --- Akhir Validasi Input ---
 
 		if err := database.UpdateCamera(r.Context(), s.db.Get(), id, &cam); err != nil {
 			writeJSONError(w, "Failed to update camera: "+err.Error(), http.StatusInternalServerError)
@@ -166,14 +158,14 @@ func (s *Server) handleDeleteCamera() http.HandlerFunc {
 	}
 }
 
-// RegisterCameraRoutes mendaftarkan semua rute terkait kamera.
-// Semua rute ini dilindungi dan memerlukan hak akses admin.
-func (s *Server) RegisterCameraRoutes(r *mux.Router) {
-	adminOnlyMiddleware := middleware.AdminOnlyMiddleware()
+func (s *Server) RegisterPublicCameraRoutes(r *mux.Router) {
+    r.HandleFunc("/cameras", s.handleListCameras()).Methods("GET")
+    r.HandleFunc("/cameras/{id:[0-9]+}", s.handleGetCameraByID()).Methods("GET")
+}
 
-	r.Handle("/cameras", adminOnlyMiddleware(s.handleCreateCamera())).Methods("POST")
-	r.HandleFunc("/cameras", s.handleListCameras()).Methods("GET")
-	r.HandleFunc("/cameras/{id:[0-9]+}", s.handleGetCameraByID()).Methods("GET")
-	r.Handle("/cameras/{id:[0-9]+}", adminOnlyMiddleware(s.handleUpdateCamera())).Methods("PUT")
-	r.Handle("/cameras/{id:[0-9]+}", adminOnlyMiddleware(s.handleDeleteCamera())).Methods("DELETE")
+func (s *Server) RegisterProtectedCameraRoutes(r *mux.Router) {
+    adminOnlyMiddleware := middleware.AdminOnlyMiddleware()
+    r.Handle("/cameras", adminOnlyMiddleware(s.handleCreateCamera())).Methods("POST")
+    r.Handle("/cameras/{id:[0-9]+}", adminOnlyMiddleware(s.handleUpdateCamera())).Methods("PUT")
+    r.Handle("/cameras/{id:[0-9]+}", adminOnlyMiddleware(s.handleDeleteCamera())).Methods("DELETE")
 }
