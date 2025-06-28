@@ -12,7 +12,6 @@ import (
 	"github.com/jaga-project/jaga-backend/internal/middleware"
 )
 
-// Structs untuk respons JSON
 type CameraInfoResult struct {
     CameraID  int64   `json:"camera_id"`
     Name      string  `json:"name"`
@@ -21,13 +20,14 @@ type CameraInfoResult struct {
 }
 
 type SuspectInfo struct {
-    SuspectID         int64            `json:"suspect_id"`
-    EvidenceImageURL  *string          `json:"evidence_image_url,omitempty"`
-    TimestampDetected time.Time        `json:"timestamp_detected"`
-    PersonScore       float64          `json:"person_score"`
-    MotorScore        float64          `json:"motor_score"`
-    FinalScore        float64          `json:"final_score"`
-    Camera            CameraInfoResult `json:"camera"`
+    SuspectID              int64            `json:"suspect_id"`
+    PersonEvidenceImageURL *string          `json:"person_evidence_image_url,omitempty"` 
+    MotorEvidenceImageURL  *string          `json:"motor_evidence_image_url,omitempty"`  
+    TimestampDetected      time.Time        `json:"timestamp_detected"`
+    PersonScore            float64          `json:"person_score"`
+    MotorScore             float64          `json:"motor_score"`
+    FinalScore             float64          `json:"final_score"`
+    Camera                 CameraInfoResult `json:"camera"`
 }
 
 type ResultResponse struct {
@@ -45,7 +45,6 @@ func (s *Server) handleGetResultByLostReportID() http.HandlerFunc {
             return
         }
 
-        // --- OTORISASI ---
         requestingUserID, _ := r.Context().Value(middleware.UserIDContextKey).(string)
         isAdmin, _ := r.Context().Value(middleware.AdminStatusContextKey).(bool)
 
@@ -63,7 +62,6 @@ func (s *Server) handleGetResultByLostReportID() http.HandlerFunc {
             writeJSONError(w, "Forbidden: You can only view results for your own reports.", http.StatusForbidden)
             return
         }
-        // --- AKHIR OTORISASI ---
 
         suspectsFromDB, err := database.GetSuspectsByLostReportID(r.Context(), s.db.Get(), lostReportID)
         if err != nil {
@@ -80,25 +78,38 @@ func (s *Server) handleGetResultByLostReportID() http.HandlerFunc {
             response.AnalysisStatus = "Processing or No Suspects Found"
         } else {
             response.AnalysisStatus = "Completed"
+
+            groupedSuspects := make(map[int64]*SuspectInfo)
+
             for _, dbSuspect := range suspectsFromDB {
-                suspectInfo := SuspectInfo{
-                    SuspectID:         dbSuspect.SuspectID,
-                    TimestampDetected: dbSuspect.DetectedTimestamp,
-                    PersonScore:       dbSuspect.PersonScore,
-                    MotorScore:        dbSuspect.MotorScore,
-                    FinalScore:        dbSuspect.FinalScore,
-                    Camera: CameraInfoResult{
-                        CameraID:  dbSuspect.CameraID,
-                        Name:      dbSuspect.CameraName,
-                        Latitude:  dbSuspect.CameraLatitude,
-                        Longitude: dbSuspect.CameraLongitude,
-                    },
+                if _, ok := groupedSuspects[dbSuspect.SuspectID]; !ok {
+                    groupedSuspects[dbSuspect.SuspectID] = &SuspectInfo{
+                        SuspectID:         dbSuspect.SuspectID,
+                        TimestampDetected: dbSuspect.DetectedTimestamp,
+                        PersonScore:       dbSuspect.PersonScore,
+                        MotorScore:        dbSuspect.MotorScore,
+                        FinalScore:        dbSuspect.FinalScore,
+                        Camera: CameraInfoResult{
+                            CameraID:  dbSuspect.CameraID,
+                            Name:      dbSuspect.CameraName,
+                            Latitude:  dbSuspect.CameraLatitude,
+                            Longitude: dbSuspect.CameraLongitude,
+                        },
+                    }
                 }
+
                 if dbSuspect.EvidenceImagePath.Valid && dbSuspect.EvidenceImagePath.String != "" {
                     url := "/" + strings.TrimPrefix(dbSuspect.EvidenceImagePath.String, "/")
-                    suspectInfo.EvidenceImageURL = &url
+                    if strings.Contains(dbSuspect.EvidenceImagePath.String, "person_") {
+                        groupedSuspects[dbSuspect.SuspectID].PersonEvidenceImageURL = &url
+                    } else if strings.Contains(dbSuspect.EvidenceImagePath.String, "motor_") {
+                        groupedSuspects[dbSuspect.SuspectID].MotorEvidenceImageURL = &url
+                    }
                 }
-                response.Suspects = append(response.Suspects, suspectInfo)
+            }
+
+            for _, suspectInfo := range groupedSuspects {
+                response.Suspects = append(response.Suspects, *suspectInfo)
             }
         }
 
