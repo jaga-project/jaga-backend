@@ -21,27 +21,26 @@ type LostReport struct {
 	Timestamp             time.Time `json:"timestamp"`
 	VehicleID             int       `json:"vehicle_id"`
 	Address               string    `json:"address"`
-	Latitude              *float64  `json:"latitude,omitempty"`  // Ditambahkan
-	Longitude             *float64  `json:"longitude,omitempty"` // Ditambahkan
+	Latitude              *float64  `json:"latitude,omitempty"`  
+	Longitude             *float64  `json:"longitude,omitempty"` 
 	Status                string    `json:"status"`
 	MotorEvidenceImageID  *int64    `json:"motor_evidence_image_id,omitempty"`
 	PersonEvidenceImageID *int64    `json:"person_evidence_image_id,omitempty"`
 }
 
-// LostReportWithVehicleInfo adalah struct yang menggabungkan LostReport dengan info ringkas Vehicle.
 type LostReportWithVehicleInfo struct {
 	LostID                int       `json:"lost_id"`
 	UserID                string    `json:"user_id"`
 	Timestamp             time.Time `json:"timestamp"`
 	VehicleID             int       `json:"vehicle_id"`
 	Address               string    `json:"address"`
-	Latitude              *float64  `json:"latitude,omitempty"`  // Ditambahkan
-	Longitude             *float64  `json:"longitude,omitempty"` // Ditambahkan
+	Latitude              *float64  `json:"latitude,omitempty"`  
+	Longitude             *float64  `json:"longitude,omitempty"` 
 	Status                string    `json:"status"`
 	MotorEvidenceImageID  *int64    `json:"motor_evidence_image_id,omitempty"`
 	PersonEvidenceImageID *int64    `json:"person_evidence_image_id,omitempty"`
 
-	// Vehicle Info (dari JOIN) - Hanya field yang dibutuhkan
+	// Vehicle Info (dari JOIN) 
 	VehicleName sql.NullString `json:"vehicle_name"`
 	PlateNumber sql.NullString `json:"plate_number"`
 }
@@ -72,7 +71,6 @@ func GetLostReportByID(ctx context.Context, db *sql.DB, id int) (*LostReport, er
 	return &lr, nil
 }
 
-// GetLostReportWithVehicleInfoByID mengambil satu laporan kehilangan beserta info ringkas kendaraannya.
 func GetLostReportWithVehicleInfoByID(ctx context.Context, db *sql.DB, id int) (*LostReportWithVehicleInfo, error) {
 	var lr LostReportWithVehicleInfo
 	query := `
