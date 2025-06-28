@@ -209,3 +209,24 @@ func DeleteDetected(ctx context.Context, db *sql.DB, id int) error {
 	}
 	return nil
 }
+
+// DeleteDetectedTx deletes a detected record from the database within a given transaction.
+func DeleteDetectedTx(ctx context.Context, tx *sql.Tx, id int) error {
+    query := `DELETE FROM detected WHERE detected_id = $1`
+    res, err := tx.ExecContext(ctx, query, id)
+    if err != nil {
+        return fmt.Errorf("error executing delete for detected record ID %d in tx: %w", id, err)
+    }
+
+    count, err := res.RowsAffected()
+    if err != nil {
+        return fmt.Errorf("error getting rows affected for detected ID %d delete in tx: %w", id, err)
+    }
+
+    if count == 0 {
+        // Menggunakan sql.ErrNoRows konsisten dengan error saat Get tidak menemukan apa-apa.
+        // Ini menandakan bahwa tidak ada baris yang dihapus.
+        return sql.ErrNoRows
+    }
+    return nil
+}
