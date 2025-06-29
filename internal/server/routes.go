@@ -1,21 +1,20 @@
 package server
 
 import (
-	"encoding/json" 
+	"encoding/json"
 	"net/http"
 
 	"github.com/gorilla/mux"
-	"github.com/jaga-project/jaga-backend/internal/middleware" 
+	"github.com/jaga-project/jaga-backend/internal/middleware"
 )
 
 func (s *Server) RegisterRoutes() http.Handler {
 	mainRouter := mux.NewRouter()
 
-	// Rute root dan ping
 	mainRouter.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json") // Set Content-Type header
+		w.Header().Set("Content-Type", "application/json") 
 		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]string{"message": "Welcome to JAGA API"}) // Encode and send JSON
+		json.NewEncoder(w).Encode(map[string]string{"message": "Welcome to JAGA API"}) 
 	}).Methods("GET")
 	mainRouter.HandleFunc("/ping", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -23,44 +22,34 @@ func (s *Server) RegisterRoutes() http.Handler {
 		json.NewEncoder(w).Encode(map[string]string{"message": "pong"})
 	}).Methods("GET")
 
-
-	// Rute Registrasi User (POST /users) harus publik
 	userPublicRouter := mainRouter.PathPrefix("/users").Subrouter()
 	userPublicRouter.HandleFunc("", s.handleCreateUser()).Methods("POST")
 
-	// Rute untuk mengakses file statis (misalnya gambar KTP) di direktori uploads
 	fs := http.FileServer(http.Dir("./uploads/"))
-  mainRouter.PathPrefix("/uploads/").Handler(http.StripPrefix("/uploads/", fs))
+	mainRouter.PathPrefix("/uploads/").Handler(http.StripPrefix("/uploads/", fs))
 
-	// --- Rute API yang Dilindungi ---
-	apiRouter := mainRouter.PathPrefix("/api").Subrouter()
-
-
-	// Buat instance middleware JWT dengan meneruskan koneksi database
-	// Asumsi s.db.Get() mengembalikan *sql.DB atau tipe yang diharapkan oleh NewJWTMiddleware
-  jwtAuthMiddleware := middleware.JWTMiddleware()
-  apiRouter.Use(jwtAuthMiddleware) // Gunakan instance middleware yang sudah dibuat
-	
-	// --- Rute yang Dilindungi Admin ---
-	// Buat instance middleware admin
-	adminOnlyMiddleware := middleware.AdminOnlyMiddleware()
-
-	// Buat subrouter baru khusus untuk admin
-	adminRouter := apiRouter.PathPrefix("/admins").Subrouter()
-	adminRouter.Use(adminOnlyMiddleware) 
-
-	s.RegisterAdminRoutes(adminRouter)
-	
-	// Rute Autentikasi (Login)
 	s.RegisterAuthRoutes(mainRouter)
 
+	publicApiRouter := mainRouter.PathPrefix("/api").Subrouter()
+	s.RegisterPublicCameraRoutes(publicApiRouter)
+
+	apiRouter := mainRouter.PathPrefix("/api").Subrouter()
+	apiRouter.Use(middleware.UnifiedAuthMiddleware(s.db.Get()))
+
+	adminOnlyMiddleware := middleware.AdminOnlyMiddleware()
+
+	adminRouter := apiRouter.PathPrefix("/admins").Subrouter()
+	adminRouter.Use(adminOnlyMiddleware)
+	s.RegisterAdminRoutes(adminRouter)
+
+
 	s.RegisterUserProtectedRoutes(apiRouter)
-	s.RegisterVehicleRoutes(apiRouter)      
-	s.RegisterDetectedRoutes(apiRouter)             
-	s.RegisterCameraRoutes(apiRouter)        
-	s.RegisterLostReportRoutes(apiRouter)    
-	s.RegisterSuspectRoutes(apiRouter)       
-	s.RegisterImageRoutes(apiRouter) 
+	s.RegisterVehicleRoutes(apiRouter)
+	s.RegisterDetectedRoutes(apiRouter)
+	s.RegisterProtectedCameraRoutes(apiRouter)
+	s.RegisterLostReportRoutes(apiRouter)
+	s.RegisterSuspectRoutes(apiRouter)
+	s.RegisterImageRoutes(apiRouter)
 	s.RegisterResultRoutes(apiRouter)
 
 	return mainRouter
