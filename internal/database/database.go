@@ -27,7 +27,6 @@ func New() Service {
 		log.Fatal(err)
 	}
 
-	// Optional: Set connection pool settings
 	db.SetMaxOpenConns(10)
 	db.SetMaxIdleConns(5)
 	db.SetConnMaxLifetime(time.Hour)

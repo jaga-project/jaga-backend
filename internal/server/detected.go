@@ -21,7 +21,7 @@ import (
     "github.com/jaga-project/jaga-backend/internal/middleware"
 )
 
-const maxFileSizeDetected = 5 * 1024 * 1024 // 5 MB
+const maxFileSizeDetected = 5 * 1024 * 1024 
 
 type DetectedResponse struct {
     DetectedID        int       `json:"detected_id"`

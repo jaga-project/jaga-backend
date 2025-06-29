@@ -90,7 +90,6 @@ func ValidateMimeType(file multipart.File, handler *multipart.FileHeader, allowe
         }
     }
 
-    // Jika tidak ada yang cocok, kembalikan pointer ke posisi semula
     if _, errSeekRestore := file.Seek(currentPos, io.SeekStart); errSeekRestore != nil {
         fmt.Printf("WARNING ValidateMimeType: Failed to restore file pointer for '%s' after failed MIME detection: %v\n", handler.Filename, errSeekRestore)
     }

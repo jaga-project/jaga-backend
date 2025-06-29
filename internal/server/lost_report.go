@@ -33,15 +33,14 @@ type LostReportResponse struct {
     Timestamp              time.Time    `json:"timestamp"`
     VehicleID              int          `json:"vehicle_id"`
     Address                string       `json:"address"`
-    Latitude               *float64     `json:"latitude,omitempty"`  // Ditambahkan
-    Longitude              *float64     `json:"longitude,omitempty"` // Ditambahkan
+    Latitude               *float64     `json:"latitude,omitempty"`  // 
+    Longitude              *float64     `json:"longitude,omitempty"` // 
     Status                 string       `json:"status"`
     MotorEvidenceImageURL  *string      `json:"motor_evidence_image_url,omitempty"`
     PersonEvidenceImageURL *string      `json:"person_evidence_image_url,omitempty"`
-    Vehicle                *VehicleInfo `json:"vehicle,omitempty"` // Menggunakan struct ringkas
+    Vehicle                *VehicleInfo `json:"vehicle,omitempty"` 
 }
 
-// Helper untuk mengubah database.LostReportWithVehicleInfo menjadi LostReportResponse
 func (s *Server) toLostReportResponse(ctx context.Context, dbQuerier database.Querier, lr *database.LostReportWithVehicleInfo) LostReportResponse {
     response := LostReportResponse{
         LostID:    lr.LostID,
@@ -49,8 +48,8 @@ func (s *Server) toLostReportResponse(ctx context.Context, dbQuerier database.Qu
         Timestamp: lr.Timestamp,
         VehicleID: lr.VehicleID,
         Address:   lr.Address,
-        Latitude:  lr.Latitude,  // Ditambahkan
-        Longitude: lr.Longitude, // Ditambahkan
+        Latitude:  lr.Latitude,  
+        Longitude: lr.Longitude, 
         Status:    lr.Status,
     }
 
@@ -74,7 +73,6 @@ func (s *Server) toLostReportResponse(ctx context.Context, dbQuerier database.Qu
         }
     }
 
-    // Mengisi info kendaraan jika ada (hasil dari LEFT JOIN valid)
     if lr.VehicleName.Valid {
         response.Vehicle = &VehicleInfo{
             VehicleName: lr.VehicleName.String,
@@ -149,7 +147,6 @@ func (s *Server) handleCreateLostReport() http.HandlerFunc {
             return
         }
 
-        // --- Validasi Latitude & Longitude ---
         latStr := r.FormValue("latitude")
         lonStr := r.FormValue("longitude")
 
@@ -172,11 +169,9 @@ func (s *Server) handleCreateLostReport() http.HandlerFunc {
             lr.Latitude = &lat
             lr.Longitude = &lon
         } else if latStr != "" || lonStr != "" {
-            // Jika hanya salah satu yang diisi
             writeJSONError(w, "Both latitude and longitude must be provided together.", http.StatusBadRequest)
             return
         }
-        // --- Akhir Validasi ---
 
         statusStr := r.FormValue("status")
         if statusStr != "" {

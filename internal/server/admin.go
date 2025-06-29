@@ -128,9 +128,9 @@ func (s *Server) handleDeleteAdmin() http.HandlerFunc {
 
 func (s *Server) RegisterAdminRoutes(r *mux.Router) {
 	adminOnlyMiddleware := middleware.AdminOnlyMiddleware()
-	r.Handle("/admins", adminOnlyMiddleware(s.handleCreateAdmin())).Methods("POST")
-	r.Handle("/admins", adminOnlyMiddleware(s.handleGetAdmin())).Methods("GET")
-	r.Handle("/admins/{user_id}", adminOnlyMiddleware(s.handleGetAdmin())).Methods("GET")
-	r.Handle("/admins/{user_id}", adminOnlyMiddleware(s.handleUpdateAdmin())).Methods("PUT")
-	r.Handle("/admins/{user_id}", adminOnlyMiddleware(s.handleDeleteAdmin())).Methods("DELETE")
+	r.Handle("/", adminOnlyMiddleware(s.handleCreateAdmin())).Methods("POST")
+	r.Handle("/", adminOnlyMiddleware(s.handleGetAdmin())).Methods("GET")
+	r.Handle("/{user_id}", adminOnlyMiddleware(s.handleGetAdmin())).Methods("GET")
+	r.Handle("/{user_id}", adminOnlyMiddleware(s.handleUpdateAdmin())).Methods("PUT")
+	r.Handle("/{user_id}", adminOnlyMiddleware(s.handleDeleteAdmin())).Methods("DELETE")
 }
