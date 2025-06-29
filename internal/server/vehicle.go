@@ -117,88 +117,81 @@ func (s *Server) handleCreateVehicle() http.HandlerFunc {
             writeJSONError(w, "Failed to start database transaction", http.StatusInternalServerError)
             return
         }
-        var txErr error
+
+        committed := false
+        defer func() {
+            if !committed {
+                tx.Rollback()
+            }
+        }()
+
         var stnkImageStoragePath string
         var kkImageStoragePath string
 
-        defer func() {
-            if p := recover(); p != nil {
-                tx.Rollback()
-                if stnkImageStoragePath != "" { os.Remove(stnkImageStoragePath) }
-                if kkImageStoragePath != "" { os.Remove(kkImageStoragePath) }
-                panic(p)
-            } else if txErr != nil {
-                tx.Rollback()
-                if stnkImageStoragePath != "" { os.Remove(stnkImageStoragePath) }
-                if kkImageStoragePath != "" { os.Remove(kkImageStoragePath) }
+        cleanupFiles := func() {
+            if stnkImageStoragePath != "" {
+                os.Remove(stnkImageStoragePath)
             }
-        }()
+            if kkImageStoragePath != "" {
+                os.Remove(kkImageStoragePath)
+            }
+        }
 
         stnkFile, stnkHandler, errSTNK := r.FormFile("stnk_image")
         if errSTNK == nil {
             defer stnkFile.Close()
-            stnkImageID, tempPath, errUpload := s.uploadAndCreateImageRecord(r.Context(), tx, stnkFile, stnkHandler, "stnk_image", maxFileSizeVehicle)
-            if errUpload != nil {
-                txErr = fmt.Errorf("failed to process stnk_image: %w", errUpload)
-                statusCode := http.StatusInternalServerError
-                errMsg := strings.ToLower(errUpload.Error())
-                if strings.Contains(errMsg, "file is empty") || strings.Contains(errMsg, "exceeds") || strings.Contains(errMsg, "invalid type") || strings.Contains(errMsg, "mime type validation failed") {
-                    statusCode = http.StatusBadRequest
-                }
-                writeJSONError(w, txErr.Error(), statusCode)
+            stnkImageID, tempPath, errUploadSTNK := s.uploadAndCreateImageRecord(r.Context(), tx, stnkFile, stnkHandler, "stnk_image", maxFileSizeVehicle)
+            if errUploadSTNK != nil {
+                cleanupFiles()
+                errorMsg := fmt.Sprintf("Gagal memproses gambar STNK: %v", errUploadSTNK)
+                writeJSONError(w, errorMsg, http.StatusBadRequest)
                 return
             }
             newVehicleDB.STNKImageID = stnkImageID
             stnkImageStoragePath = tempPath
         } else if errSTNK != http.ErrMissingFile {
-            txErr = fmt.Errorf("error retrieving stnk_image: %w", errSTNK)
-            writeJSONError(w, txErr.Error(), http.StatusBadRequest)
+            errorMsg := fmt.Sprintf("Gagal mengambil file gambar STNK dari request: %v", errSTNK)
+            writeJSONError(w, errorMsg, http.StatusBadRequest)
             return
         }
 
         kkFile, kkHandler, errKK := r.FormFile("kk_image")
         if errKK == nil {
             defer kkFile.Close()
-            kkImageID, tempPath, errUpload := s.uploadAndCreateImageRecord(r.Context(), tx, kkFile, kkHandler, "kk_image", maxFileSizeVehicle)
-            if errUpload != nil {
-                txErr = fmt.Errorf("failed to process kk_image: %w", errUpload)
-                statusCode := http.StatusInternalServerError
-                errMsg := strings.ToLower(errUpload.Error())
-                if strings.Contains(errMsg, "file is empty") || strings.Contains(errMsg, "exceeds") || strings.Contains(errMsg, "invalid type") || strings.Contains(errMsg, "mime type validation failed") {
-                    statusCode = http.StatusBadRequest
-                }
-                writeJSONError(w, txErr.Error(), statusCode)
+            kkImageID, tempPath, errUploadKK := s.uploadAndCreateImageRecord(r.Context(), tx, kkFile, kkHandler, "kk_image", maxFileSizeVehicle)
+            if errUploadKK != nil {
+                cleanupFiles()
+                errorMsg := fmt.Sprintf("Gagal memproses gambar KK: %v", errUploadKK)
+                writeJSONError(w, errorMsg, http.StatusBadRequest)
                 return
             }
             newVehicleDB.KKImageID = kkImageID
             kkImageStoragePath = tempPath
         } else if errKK != http.ErrMissingFile {
-            txErr = fmt.Errorf("error retrieving kk_image: %w", errKK)
-            writeJSONError(w, txErr.Error(), http.StatusBadRequest)
+            errorMsg := fmt.Sprintf("Gagal mengambil file gambar KK dari request: %v", errKK)
+            writeJSONError(w, errorMsg, http.StatusBadRequest)
             return
         }
 
-        txErr = database.CreateVehicleTx(r.Context(), tx, &newVehicleDB)
-        if txErr != nil {
-            fmt.Printf("ERROR: Failed to create vehicle record in transaction: %v\n", txErr)
-            writeJSONError(w, "Failed to create vehicle record: "+txErr.Error(), http.StatusInternalServerError)
+        if err := database.CreateVehicleTx(r.Context(), tx, &newVehicleDB); err != nil {
+            cleanupFiles()
+            fmt.Printf("ERROR: Failed to create vehicle record in transaction: %v\n", err)
+            writeJSONError(w, "Failed to create vehicle record: "+err.Error(), http.StatusInternalServerError)
             return
         }
 
-        txErr = tx.Commit()
-        if txErr != nil {
-            fmt.Printf("ERROR: Failed to commit database transaction for vehicle creation: %v\n", txErr)
+        if err := tx.Commit(); err != nil {
+            cleanupFiles()
+            fmt.Printf("ERROR: Failed to commit database transaction for vehicle creation: %v\n", err)
             writeJSONError(w, "Failed to commit database transaction", http.StatusInternalServerError)
             return
         }
+        committed = true 
+
         createdVehicle, errGet := database.GetVehicleByID(r.Context(), s.db.Get(), newVehicleDB.VehicleID)
         if errGet != nil {
             fmt.Printf("WARN: Vehicle created (ID: %d), but failed to retrieve for full response: %v\n", newVehicleDB.VehicleID, errGet)
-            response := s.toVehicleResponse(r.Context(), s.db.Get(), &newVehicleDB)
-            w.Header().Set("Content-Type", "application/json")
-            w.WriteHeader(http.StatusCreated)
-            json.NewEncoder(w).Encode(response)
-            return
+            createdVehicle = &newVehicleDB // Fallback ke data yang ada
         }
 
         response := s.toVehicleResponse(r.Context(), s.db.Get(), createdVehicle)
@@ -406,7 +399,7 @@ func (s *Server) handleUpdateVehicle() http.HandlerFunc {
             if ownershipStr == string(database.OwnershipPribadi) || ownershipStr == string(database.OwnershipKeluarga) {
                 updates["ownership"] = ownershipStr
             } else if ownershipStr == "" {
-                updates["ownership"] = nil 
+                updates["ownership"] = nil
             } else {
                 writeJSONError(w, fmt.Sprintf("Invalid ownership value. Must be '%s', '%s', or empty", database.OwnershipPribadi, database.OwnershipKeluarga), http.StatusBadRequest)
                 return
@@ -418,38 +411,35 @@ func (s *Server) handleUpdateVehicle() http.HandlerFunc {
             writeJSONError(w, "Failed to start database transaction", http.StatusInternalServerError)
             return
         }
-        var txErr error
+        committed := false
+        defer func() {
+            if !committed {
+                tx.Rollback()
+            }
+        }()
+
         var newStnkImageStoragePath, newKkImageStoragePath string
         oldStnkImageID := existingVehicle.STNKImageID
         oldKkImageID := existingVehicle.KKImageID
 
-        defer func() {
-            if p := recover(); p != nil {
-                tx.Rollback()
-                if newStnkImageStoragePath != "" { os.Remove(newStnkImageStoragePath) }
-                if newKkImageStoragePath != "" { os.Remove(newKkImageStoragePath) }
-                panic(p)
-            } else if txErr != nil {
-                tx.Rollback()
-                if newStnkImageStoragePath != "" { os.Remove(newStnkImageStoragePath) }
-                if newKkImageStoragePath != "" { os.Remove(newKkImageStoragePath) }
-            }
-        }()
+        cleanupNewFiles := func() {
+            if newStnkImageStoragePath != "" { os.Remove(newStnkImageStoragePath) }
+            if newKkImageStoragePath != "" { os.Remove(newKkImageStoragePath) }
+        }
 
         stnkFile, stnkHandler, errSTNK := r.FormFile("stnk_image")
         if errSTNK == nil {
             defer stnkFile.Close()
             stnkImageID, tempPath, errUpload := s.uploadAndCreateImageRecord(r.Context(), tx, stnkFile, stnkHandler, "stnk_image", maxFileSizeVehicle)
             if errUpload != nil {
-                txErr = fmt.Errorf("failed to process new stnk_image: %w", errUpload)
-                writeJSONError(w, txErr.Error(), http.StatusBadRequest)
+                cleanupNewFiles()
+                writeJSONError(w, fmt.Sprintf("failed to process new stnk_image: %w", errUpload), http.StatusBadRequest)
                 return
             }
             updates["stnk_image_id"] = stnkImageID.Int64
             newStnkImageStoragePath = tempPath
         } else if errSTNK != http.ErrMissingFile {
-            txErr = fmt.Errorf("error retrieving stnk_image for update: %w", errSTNK)
-            writeJSONError(w, txErr.Error(), http.StatusBadRequest)
+            writeJSONError(w, fmt.Sprintf("error retrieving stnk_image for update: %w", errSTNK), http.StatusBadRequest)
             return
         }
 
@@ -458,15 +448,14 @@ func (s *Server) handleUpdateVehicle() http.HandlerFunc {
             defer kkFile.Close()
             kkImageID, tempPath, errUpload := s.uploadAndCreateImageRecord(r.Context(), tx, kkFile, kkHandler, "kk_image", maxFileSizeVehicle)
             if errUpload != nil {
-                txErr = fmt.Errorf("failed to process new kk_image: %w", errUpload)
-                writeJSONError(w, txErr.Error(), http.StatusBadRequest)
+                cleanupNewFiles()
+                writeJSONError(w, fmt.Sprintf("failed to process new kk_image: %w", errUpload), http.StatusBadRequest)
                 return
             }
             updates["kk_image_id"] = kkImageID.Int64
             newKkImageStoragePath = tempPath
         } else if errKK != http.ErrMissingFile {
-            txErr = fmt.Errorf("error retrieving kk_image for update: %w", errKK)
-            writeJSONError(w, txErr.Error(), http.StatusBadRequest)
+            writeJSONError(w, fmt.Sprintf("error retrieving kk_image for update: %w", errKK), http.StatusBadRequest)
             return
         }
 
@@ -475,31 +464,33 @@ func (s *Server) handleUpdateVehicle() http.HandlerFunc {
             return
         }
 
-        txErr = database.UpdateVehicleTx(r.Context(), tx, id, updates)
-        if txErr != nil {
-            if errors.Is(txErr, sql.ErrNoRows) {
+        if err := database.UpdateVehicleTx(r.Context(), tx, id, updates); err != nil {
+            cleanupNewFiles()
+            if errors.Is(err, sql.ErrNoRows) {
                 writeJSONError(w, "Vehicle not found or no effective changes made", http.StatusNotFound)
             } else {
-                writeJSONError(w, "Failed to update vehicle: "+txErr.Error(), http.StatusInternalServerError)
+                writeJSONError(w, "Failed to update vehicle: "+err.Error(), http.StatusInternalServerError)
             }
             return
         }
 
+        if err := tx.Commit(); err != nil {
+            cleanupNewFiles()
+            writeJSONError(w, "Failed to commit database transaction", http.StatusInternalServerError)
+            return
+        }
+        committed = true // Tandai commit berhasil
+
+        // HAPUS FILE LAMA SETELAH COMMIT BERHASIL
         if _, ok := updates["stnk_image_id"]; ok && oldStnkImageID.Valid {
-             if errDel := s.deleteImageRecordAndFile(r.Context(), tx, oldStnkImageID.Int64); errDel != nil {
-                fmt.Printf("WARN: Failed to delete old STNK image (ID: %d) after update: %v\n", oldStnkImageID.Int64, errDel)
+            if errDel := s.deleteImageRecordAndFile(r.Context(), nil, oldStnkImageID.Int64); errDel != nil {
+                fmt.Printf("WARN: DB updated but failed to delete old STNK image (ID: %d): %v\n", oldStnkImageID.Int64, errDel)
             }
         }
         if _, ok := updates["kk_image_id"]; ok && oldKkImageID.Valid {
-            if errDel := s.deleteImageRecordAndFile(r.Context(), tx, oldKkImageID.Int64); errDel != nil {
-                fmt.Printf("WARN: Failed to delete old KK image (ID: %d) after update: %v\n", oldKkImageID.Int64, errDel)
+            if errDel := s.deleteImageRecordAndFile(r.Context(), nil, oldKkImageID.Int64); errDel != nil {
+                fmt.Printf("WARN: DB updated but failed to delete old KK image (ID: %d): %v\n", oldKkImageID.Int64, errDel)
             }
-        }
-
-        txErr = tx.Commit()
-        if txErr != nil {
-            writeJSONError(w, "Failed to commit database transaction", http.StatusInternalServerError)
-            return
         }
 
         updatedVehicleDB, errGet := database.GetVehicleByID(r.Context(), db, id)
