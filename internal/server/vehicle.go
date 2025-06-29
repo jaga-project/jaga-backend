@@ -433,13 +433,13 @@ func (s *Server) handleUpdateVehicle() http.HandlerFunc {
             stnkImageID, tempPath, errUpload := s.uploadAndCreateImageRecord(r.Context(), tx, stnkFile, stnkHandler, "stnk_image", maxFileSizeVehicle)
             if errUpload != nil {
                 cleanupNewFiles()
-                writeJSONError(w, fmt.Sprintf("failed to process new stnk_image: %w", errUpload), http.StatusBadRequest)
+                writeJSONError(w, fmt.Sprintf("failed to process new stnk_image: %v", errUpload), http.StatusBadRequest)
                 return
             }
             updates["stnk_image_id"] = stnkImageID.Int64
             newStnkImageStoragePath = tempPath
         } else if errSTNK != http.ErrMissingFile {
-            writeJSONError(w, fmt.Sprintf("error retrieving stnk_image for update: %w", errSTNK), http.StatusBadRequest)
+            writeJSONError(w, fmt.Sprintf("error retrieving stnk_image for update: %v", errSTNK), http.StatusBadRequest)
             return
         }
 
@@ -449,13 +449,13 @@ func (s *Server) handleUpdateVehicle() http.HandlerFunc {
             kkImageID, tempPath, errUpload := s.uploadAndCreateImageRecord(r.Context(), tx, kkFile, kkHandler, "kk_image", maxFileSizeVehicle)
             if errUpload != nil {
                 cleanupNewFiles()
-                writeJSONError(w, fmt.Sprintf("failed to process new kk_image: %w", errUpload), http.StatusBadRequest)
+                writeJSONError(w, fmt.Sprintf("failed to process new kk_image: %v", errUpload), http.StatusBadRequest)
                 return
             }
             updates["kk_image_id"] = kkImageID.Int64
             newKkImageStoragePath = tempPath
         } else if errKK != http.ErrMissingFile {
-            writeJSONError(w, fmt.Sprintf("error retrieving kk_image for update: %w", errKK), http.StatusBadRequest)
+            writeJSONError(w, fmt.Sprintf("error retrieving kk_image for update: %v", errKK), http.StatusBadRequest)
             return
         }
 
@@ -479,9 +479,8 @@ func (s *Server) handleUpdateVehicle() http.HandlerFunc {
             writeJSONError(w, "Failed to commit database transaction", http.StatusInternalServerError)
             return
         }
-        committed = true // Tandai commit berhasil
+        committed = true 
 
-        // HAPUS FILE LAMA SETELAH COMMIT BERHASIL
         if _, ok := updates["stnk_image_id"]; ok && oldStnkImageID.Valid {
             if errDel := s.deleteImageRecordAndFile(r.Context(), nil, oldStnkImageID.Int64); errDel != nil {
                 fmt.Printf("WARN: DB updated but failed to delete old STNK image (ID: %d): %v\n", oldStnkImageID.Int64, errDel)
