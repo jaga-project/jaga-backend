@@ -1,2 +1,4 @@
 # File konfigurasi dan rahasia lingkungan
 .env
+
+/uploads
