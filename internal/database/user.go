@@ -21,7 +21,6 @@ type User struct {
 }
 
 func CreateUserTx(ctx context.Context, tx *sql.Tx, u *User) error {
-    // Menghapus RETURNING user_id karena tidak digunakan
     query := `
         INSERT INTO users (user_id, name, email, phone, password, nik, ktp_image_id, created_at)
         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`
@@ -57,16 +56,9 @@ func CreateManyUser(db *sql.DB, users []User, ctx context.Context) error {
 		if users[i].KTPImageID != nil {
 			ktpImage = sql.NullInt64{Int64: *users[i].KTPImageID, Valid: true}
 		}
-
-		// Password harus di-hash sebelum disimpan.
-		// Jika tidak menggunakan RETURNING:
 		_, err := stmt.ExecContext(ctx,
 			users[i].UserID, users[i].Name, users[i].Email, users[i].Phone, users[i].Password, users[i].NIK, ktpImage, users[i].CreatedAt,
 		)
-		// Jika menggunakan RETURNING:
-		// err := stmt.QueryRowContext(ctx,
-		// 	users[i].UserID, users[i].Name, users[i].Email, users[i].Phone, users[i].Password, users[i].NIK, ktpImage, users[i].CreatedAt,
-		// ).Scan(&users[i].UserID)
 		if err != nil {
 			return err
 		}
@@ -80,7 +72,7 @@ func FindSingleUser(db *sql.DB, email string, ctx context.Context) (*User, error
 	var u User
 	err := row.Scan(&u.UserID, &u.Name, &u.Email, &u.Phone, &u.Password, &u.NIK, &u.KTPImageID, &u.CreatedAt)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) { // Cara yang lebih baik untuk memeriksa sql.ErrNoRows
+		if errors.Is(err, sql.ErrNoRows) { 
 			return nil, errors.New("user not found")
 		}
 		return nil, err
@@ -130,7 +122,6 @@ func UpdateUserTx(ctx context.Context, tx *sql.Tx, userID string, updates map[st
         return errors.New("no fields provided for user update")
     }
 
-    // Daftar kolom yang diizinkan untuk diupdate untuk mencegah SQL Injection.
     allowedColumns := map[string]bool{
         "name":         true,
         "email":        true,
@@ -169,7 +160,7 @@ func UpdateUserTx(ctx context.Context, tx *sql.Tx, userID string, updates map[st
         return fmt.Errorf("error getting rows affected after user update in tx: %w", err)
     }
     if count == 0 {
-        return sql.ErrNoRows // Mengindikasikan tidak ada baris yang diupdate (mungkin ID tidak ditemukan)
+        return sql.ErrNoRows 
     }
     return nil
 }

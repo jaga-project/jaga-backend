@@ -42,7 +42,6 @@ func (s *Server) handleCreateUser() http.HandlerFunc {
             return
         }
 
-        // Ambil data dari form
         newUser := database.User{
             UserID:    uuid.New().String(),
             CreatedAt: time.Now(),
@@ -58,7 +57,6 @@ func (s *Server) handleCreateUser() http.HandlerFunc {
             return
         }
 
-        // Hash password
         hashedPasswordBytes, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
         if err != nil {
             writeJSONError(w, "Failed to hash password: "+err.Error(), http.StatusInternalServerError)
@@ -66,23 +64,20 @@ func (s *Server) handleCreateUser() http.HandlerFunc {
         }
         newUser.Password = string(hashedPasswordBytes)
 
-        // Mulai proses file dan transaksi database
         tx, err := s.db.Get().BeginTx(r.Context(), nil)
         if err != nil {
             writeJSONError(w, "Failed to start database transaction: "+err.Error(), http.StatusInternalServerError)
             return
         }
-        // Defer Rollback adalah jaring pengaman. Jika Commit berhasil, Rollback tidak akan berpengaruh.
         defer tx.Rollback()
 
-        // Proses file KTP di dalam scope transaksi
         file, handler, err := r.FormFile("ktp_image")
         if err != nil && err != http.ErrMissingFile {
             writeJSONError(w, "Error retrieving KTP image: "+err.Error(), http.StatusBadRequest)
             return
         }
 
-        if handler != nil { // Hanya proses jika file diunggah
+        if handler != nil { 
             defer file.Close()
 
             validatedMimeType, errMime := ValidateMimeType(file, handler, DefaultAllowedMimeTypes)
@@ -96,18 +91,14 @@ func (s *Server) handleCreateUser() http.HandlerFunc {
                 return
             }
 
-            // Simpan file ke disk
             uniqueFilename := generateUniqueFilenameLocal(handler.Filename)
             ktpStoragePath := filepath.Join(imageUploadPath, uniqueFilename)
 
-            // Jika terjadi error setelah ini, Rollback akan membatalkan DB, dan kita perlu menghapus file secara manual.
-            // Kita akan menghapus file jika commit gagal.
             if err := saveUploadedFile(file, ktpStoragePath); err != nil {
                 writeJSONError(w, "Failed to save KTP image file: "+err.Error(), http.StatusInternalServerError)
                 return
             }
 
-            // Buat record gambar di DB
             imgRecord := database.Image{
                 StoragePath:      filepath.ToSlash(ktpStoragePath),
                 FilenameOriginal: handler.Filename,
@@ -115,17 +106,15 @@ func (s *Server) handleCreateUser() http.HandlerFunc {
                 SizeBytes:        handler.Size,
             }
             if err := database.CreateImageTx(r.Context(), tx, &imgRecord); err != nil {
-                os.Remove(ktpStoragePath) // Hapus file jika DB insert gagal
+                os.Remove(ktpStoragePath) 
                 writeJSONError(w, "Failed to save KTP image metadata: "+err.Error(), http.StatusInternalServerError)
                 return
             }
             newUser.KTPImageID = &imgRecord.ImageID
         }
 
-        // Buat record user di DB
         if err := database.CreateUserTx(r.Context(), tx, &newUser); err != nil {
             if newUser.KTPImageID != nil {
-                // Hapus file yang sudah disimpan jika user create gagal
                 path, _ := database.GetImageStoragePath(r.Context(), tx, *newUser.KTPImageID)
                 if path != "" {
                     os.Remove(path)
@@ -135,9 +124,7 @@ func (s *Server) handleCreateUser() http.HandlerFunc {
             return
         }
 
-        // Jika semua berhasil, commit transaksi
         if err := tx.Commit(); err != nil {
-            // Jika commit gagal, file mungkin sudah tersimpan. Coba hapus.
             if newUser.KTPImageID != nil {
                 path, _ := database.GetImageStoragePath(r.Context(), s.db.Get(), *newUser.KTPImageID)
                 if path != "" {
@@ -148,7 +135,7 @@ func (s *Server) handleCreateUser() http.HandlerFunc {
             return
         }
 
-        newUser.Password = "" // Jangan kirim password ke client
+        newUser.Password = "" 
         w.Header().Set("Content-Type", "application/json")
         w.WriteHeader(http.StatusCreated)
         json.NewEncoder(w).Encode(newUser)
@@ -248,7 +235,6 @@ func (s *Server) handleUpdateUser() http.HandlerFunc {
             return
         }
 
-        // Gunakan transaksi untuk operasi update
         tx, err := s.db.Get().BeginTx(r.Context(), nil)
         if err != nil {
             writeJSONError(w, "Failed to start transaction", http.StatusInternalServerError)
@@ -275,7 +261,7 @@ func (s *Server) handleUpdateUser() http.HandlerFunc {
             writeJSONError(w, "User updated, but failed to retrieve new data", http.StatusInternalServerError)
             return
         }
-        updatedUser.Password = "" // Jangan kirim password ke client
+        updatedUser.Password = "" 
 
         w.Header().Set("Content-Type", "application/json")
         w.WriteHeader(http.StatusOK)
@@ -325,7 +311,6 @@ func saveUploadedFile(file io.ReadSeeker, path string) error {
     }
     defer dst.Close()
 
-    // Kembali ke awal file setelah validasi MIME type
     if _, err := file.Seek(0, io.SeekStart); err != nil {
         return err
     }

@@ -58,10 +58,8 @@ func (s *Server) handleLogin() http.HandlerFunc {
 			return
 		}
 
-		// Cek status admin SEKALI di sini
 		isAdmin, err := database.IsUserAdmin(s.db.Get(), user.UserID)
 		if err != nil {
-			// Tangani error, log saja dan anggap bukan admin untuk keamanan
 			log.Printf("Failed to check admin status for %s during login: %v", user.UserID, err)
 			isAdmin = false
 		}
@@ -72,7 +70,6 @@ func (s *Server) handleLogin() http.HandlerFunc {
 			return
 		}
 
-		//token dan detail user
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(LoginResponse{
 			Token:      tokenString,

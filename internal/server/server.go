@@ -35,7 +35,6 @@ func NewServer() *http.Server {
 
 	corsOriginsStr := os.Getenv("CORS_ALLOWED_ORIGINS")
     if corsOriginsStr == "" {
-        // Default ke localhost jika variabel tidak di-set
         corsOriginsStr = "http://localhost:3000"
         log.Printf("WARN: CORS_ALLOWED_ORIGINS environment variable not set. Defaulting to '%s'", corsOriginsStr)
     }

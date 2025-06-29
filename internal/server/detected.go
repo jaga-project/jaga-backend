@@ -424,7 +424,6 @@ func (s *Server) handleUpdateDetected() http.HandlerFunc {
 		// Atau, jika ingin upload gambar baru saat update, perlu logika ParseMultipartForm dan processImageUpload.
 		// Untuk kesederhanaan, kita asumsikan ID gambar yang valid (jika ada) sudah ada di tabel images.
 
-		// Ambil data lama untuk perbandingan atau untuk mengisi field yang tidak diupdate
 		existingDetected, err := database.GetDetectedByID(r.Context(), s.db.Get(), id)
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
@@ -435,15 +434,12 @@ func (s *Server) handleUpdateDetected() http.HandlerFunc {
 			return
 		}
 
-		// Update field yang diizinkan
 		if dUpdates.CameraID != 0 {
 			existingDetected.CameraID = dUpdates.CameraID
 		}
 		if !dUpdates.Timestamp.IsZero() {
 			existingDetected.Timestamp = dUpdates.Timestamp
 		}
-		// Update ID gambar jika disediakan di payload
-		// Jika ingin menghapus gambar, klien harus mengirimkan ID gambar null atau field yang sesuai
 		if dUpdates.PersonImageID.Valid {
 			existingDetected.PersonImageID = dUpdates.PersonImageID
 		} else if r.Body != http.NoBody { // Cek apakah field PersonImageID ada di JSON request (meskipun null)
@@ -475,7 +471,6 @@ func (s *Server) handleUpdateDetected() http.HandlerFunc {
 			writeJSONError(w, "Update succeeded but failed to retrieve updated record: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
-		// Mengembalikan DetectedResponse
 		response := s.toDetectedResponse(r.Context(), s.db.Get(), updatedDetected)
 		w.WriteHeader(http.StatusOK)
 		json.NewEncoder(w).Encode(response)
@@ -491,7 +486,6 @@ func (s *Server) handleDeleteDetected() http.HandlerFunc {
 			return
 		}
 
-		// Ambil data detected untuk mendapatkan ID gambar-gambar terkait.
 		detectedData, err := database.GetDetectedByID(r.Context(), s.db.Get(), id)
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
@@ -502,28 +496,23 @@ func (s *Server) handleDeleteDetected() http.HandlerFunc {
 			return
 		}
 
-		// Mulai transaksi untuk memastikan semua operasi DB atomik.
 		tx, err := s.db.Get().BeginTx(r.Context(), nil)
 		if err != nil {
 			writeJSONError(w, "Failed to start transaction: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
-		defer tx.Rollback() // Rollback otomatis jika terjadi error sebelum commit.
+		defer tx.Rollback() 
 
-		// Hapus record 'detected' utama.
 		if err := database.DeleteDetectedTx(r.Context(), tx, id); err != nil {
 			writeJSONError(w, "Failed to delete detected record from DB: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
 
-		// Kumpulkan path file yang akan dihapus dari disk.
 		var imagePathsToDelete []string
 
-		// Hapus record person_image dan dapatkan path-nya.
 		if detectedData.PersonImageID.Valid {
 			path, err := database.GetImageStoragePathAndDeleteTx(r.Context(), tx, detectedData.PersonImageID.Int64)
 			if err != nil {
-				// Jika ada error di sini, transaksi akan di-rollback oleh defer.
 				writeJSONError(w, "Failed to process person image deletion: "+err.Error(), http.StatusInternalServerError)
 				return
 			}
@@ -532,7 +521,6 @@ func (s *Server) handleDeleteDetected() http.HandlerFunc {
 			}
 		}
 
-		// Hapus record motorcycle_image dan dapatkan path-nya.
 		if detectedData.MotorcycleImageID.Valid {
 			path, err := database.GetImageStoragePathAndDeleteTx(r.Context(), tx, detectedData.MotorcycleImageID.Int64)
 			if err != nil {
@@ -544,13 +532,11 @@ func (s *Server) handleDeleteDetected() http.HandlerFunc {
 			}
 		}
 
-		// Jika semua operasi DB berhasil, commit transaksi.
 		if err := tx.Commit(); err != nil {
 			writeJSONError(w, "Failed to commit transaction: "+err.Error(), http.StatusInternalServerError)
 			return
 		}
 
-		// HANYA SETELAH DB BERHASIL, hapus file dari disk di latar belakang.
 		go func() {
 			for _, path := range imagePathsToDelete {
 				if err := os.Remove(path); err != nil {

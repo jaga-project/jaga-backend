@@ -113,7 +113,6 @@ func (s *Server) handleCreateLostReport() http.HandlerFunc {
                 writeJSONError(w, fmt.Sprintf("Invalid timestamp format. Use RFC3339. Error: %v", err), http.StatusBadRequest)
                 return
             }
-
             // // --- DEBUGGING LOGS START ---
             // serverTimeUTC := time.Now().UTC()
             // fmt.Println("--- Create Lost Report: Timestamp Validation Debug ---")
@@ -273,7 +272,6 @@ func (s *Server) handleCreateLostReport() http.HandlerFunc {
         createdLRFromDB, errGet := database.GetLostReportWithVehicleInfoByID(r.Context(), s.db.Get(), lr.LostID)
         if errGet != nil {
             fmt.Printf("WARN: handleCreateLostReport - Failed to retrieve created report for full response: %v\n", errGet)
-            // Fallback: create response from the data we have, without vehicle/image details
             fallbackResponse := LostReportResponse{
                 LostID:    lr.LostID,
                 UserID:    lr.UserID,
@@ -429,7 +427,6 @@ func (s *Server) handleGetUserLostReports() http.HandlerFunc {
         }
 
         db := s.db.Get()
-        // NOTE: This assumes a function `ListLostReportsWithVehicleInfoByUserID` exists in your database package.
         list, err := database.ListLostReportsWithVehicleInfoByUserID(r.Context(), db, requestingUserID)
         if err != nil {
             writeJSONError(w, "Failed to list your lost reports: "+err.Error(), http.StatusInternalServerError)
@@ -461,7 +458,7 @@ func (s *Server) handleUpdateLostReport() http.HandlerFunc {
             VehicleID *int     `json:"vehicle_id"`
             Status    *string  `json:"status"`
             Latitude  *float64 `json:"latitude"`  // Ditambahkan
-            Longitude *float64 `json:"longitude"` // Ditambahkan
+            Longitude *float64 `json:"longitude"` 
         }
 
         if err := json.NewDecoder(r.Body).Decode(&updates); err != nil {
@@ -494,8 +491,8 @@ func (s *Server) handleUpdateLostReport() http.HandlerFunc {
             Timestamp:             existingLR.Timestamp,
             VehicleID:             existingLR.VehicleID,
             Address:               existingLR.Address,
-            Latitude:              existingLR.Latitude,  // Ditambahkan
-            Longitude:             existingLR.Longitude, // Ditambahkan
+            Latitude:              existingLR.Latitude,  
+            Longitude:             existingLR.Longitude, 
             Status:                existingLR.Status,
             MotorEvidenceImageID:  existingLR.MotorEvidenceImageID,
             PersonEvidenceImageID: existingLR.PersonEvidenceImageID,
@@ -627,7 +624,6 @@ func (s *Server) handleDeleteLostReport() http.HandlerFunc {
     }
 }
 
-// Regis rute lost report
 func (s *Server) RegisterLostReportRoutes(r *mux.Router) {
 
     adminOnlyMiddleware := middleware.AdminOnlyMiddleware()

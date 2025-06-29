@@ -103,34 +103,28 @@ func CreateSuspectTx(ctx context.Context, tx *sql.Tx, s *Suspect) error {
 
 func CreateManySuspects(ctx context.Context, db *sql.DB, suspects []*Suspect) error {
     if len(suspects) == 0 {
-        return nil // Tidak ada yang perlu dilakukan
+        return nil 
     }
 
-    // Mulai transaksi
     tx, err := db.BeginTx(ctx, nil)
     if err != nil {
         return fmt.Errorf("failed to begin transaction: %w", err)
     }
-    // Pastikan transaksi di-rollback jika ada error
     defer tx.Rollback()
 
-    // Siapkan statement INSERT. Ini lebih efisien daripada membuat query string yang panjang.
     stmt, err := tx.PrepareContext(ctx, `INSERT INTO suspect (detected_id, lost_id, person_score, motor_score, final_score, created_at) VALUES ($1, $2, $3, $4, $5, $6)`)
     if err != nil {
         return fmt.Errorf("failed to prepare statement: %w", err)
     }
     defer stmt.Close()
 
-    // Eksekusi statement untuk setiap suspect
     for _, s := range suspects {
         _, err := stmt.ExecContext(ctx, s.DetectedID, s.LostID, s.PersonScore, s.MotorScore, s.FinalScore, s.CreatedAt)
         if err != nil {
-            // Jika ada satu saja yang gagal, seluruh transaksi akan di-rollback.
             return fmt.Errorf("failed to execute statement for suspect with detected_id %d: %w", s.DetectedID, err)
         }
     }
 
-    // Jika semua berhasil, commit transaksi
     return tx.Commit()
 }
 

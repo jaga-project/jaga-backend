@@ -16,12 +16,9 @@ var jwtKey []byte
 func init() {
 	err := godotenv.Load()
 	if err != nil {
-		// Tidak dianggap error fatal jika .env tidak ada,
-		// karena variabel mungkin sudah di-set di environment sistem.
 		log.Println("auth: .env file not found, relying on system environment variables")
 	}
 
-	// Gunakan satu nama variabel environment yang konsisten, misalnya JWT_SECRET
 	keyStr := os.Getenv("JWT_SECRET")
 	if keyStr == "" {
 		log.Fatal("FATAL: JWT_SECRET environment variable not set. Application cannot start securely.")
@@ -36,13 +33,12 @@ type Claims struct {
 	jwt.RegisteredClaims
 }
 
-// GenerateJWT membuat token JWT baru untuk UserID yang diberikan.
 func GenerateJWT(userID string, isAdmin bool) (string, time.Time, error) {
 	if len(jwtKey) == 0 {
 		return "", time.Time{}, errors.New("JWT secret key is not initialized")
 	}
 
-	expirationTime := time.Now().Add(24 * time.Hour) // Token berlaku selama 24 jam
+	expirationTime := time.Now().Add(24 * time.Hour) 
 
 	claims := &Claims{
 		UserID:  userID,
@@ -63,16 +59,13 @@ func GenerateJWT(userID string, isAdmin bool) (string, time.Time, error) {
 	return tokenString, expirationTime, nil
 }
 
-// ValidateJWT memvalidasi token string dan mengembalikan claims jika valid.
 func ValidateJWT(tokenString string) (*Claims, error) {
-	// Pastikan jwtKey sudah diinisialisasi.
 	if len(jwtKey) == 0 {
 		return nil, errors.New("JWT secret key is not initialized")
 	}
 
 	claims := &Claims{}
 	token, err := jwt.ParseWithClaims(tokenString, claims, func(token *jwt.Token) (interface{}, error) {
-		// Gunakan variabel jwtKey yang sudah diinisialisasi.
 		return jwtKey, nil
 	})
 

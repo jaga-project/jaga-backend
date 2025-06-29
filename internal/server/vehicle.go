@@ -41,15 +41,13 @@ func (s *Server) toVehicleResponse(ctx context.Context, dbQuerier database.Queri
         Color:       v.Color,
         UserID:      v.UserID,
         PlateNumber: v.PlateNumber,
-        // Ownership:   v.Ownership,
     }
 
 		if v.Ownership.Valid {
-        // Konversi string dari sql.NullString ke database.OwnershipType, lalu ambil alamatnya
         ownershipValue := database.OwnershipType(v.Ownership.String)
         response.Ownership = &ownershipValue
     } else {
-        response.Ownership = nil // Jika NULL di DB, maka nil di response (akan diabaikan oleh omitempty)
+        response.Ownership = nil 
     }
 
     if v.STNKImageID.Valid {
@@ -340,7 +338,7 @@ func (s *Server) handleGetUserVehicles() http.HandlerFunc {
             return
         }
 
-        db := s.db.Get() // Menggunakan *sql.DB karena ListVehiclesByUserID menerima Querier
+        db := s.db.Get() 
         vehiclesDB, err := database.ListVehiclesByUserID(r.Context(), db, userIDFromCtx)
         if err != nil {
             fmt.Printf("ERROR: Failed to list vehicles for user %s: %v\n", userIDFromCtx, err)
@@ -348,8 +346,6 @@ func (s *Server) handleGetUserVehicles() http.HandlerFunc {
             return
         }
 
-        // Jika vehiclesDB kosong, responseList akan menjadi slice kosong,
-        // dan JSON response akan menjadi array kosong `[]`, yang sudah benar.
         responseList := make([]VehicleResponse, 0, len(vehiclesDB))
         for i := range vehiclesDB {
             responseList = append(responseList, s.toVehicleResponse(r.Context(), db, &vehiclesDB[i]))
@@ -394,10 +390,8 @@ func (s *Server) handleUpdateVehicle() http.HandlerFunc {
             return
         }
 
-        // Peta untuk menampung kolom yang akan diupdate.
         updates := make(map[string]interface{})
 
-        // Cek setiap field dari form. Jika ada, tambahkan ke map 'updates'.
         if val, ok := r.Form["vehicle_name"]; ok {
             updates["vehicle_name"] = val[0]
         }
@@ -412,7 +406,7 @@ func (s *Server) handleUpdateVehicle() http.HandlerFunc {
             if ownershipStr == string(database.OwnershipPribadi) || ownershipStr == string(database.OwnershipKeluarga) {
                 updates["ownership"] = ownershipStr
             } else if ownershipStr == "" {
-                updates["ownership"] = nil // Mengizinkan untuk set ke NULL
+                updates["ownership"] = nil 
             } else {
                 writeJSONError(w, fmt.Sprintf("Invalid ownership value. Must be '%s', '%s', or empty", database.OwnershipPribadi, database.OwnershipKeluarga), http.StatusBadRequest)
                 return
@@ -442,7 +436,6 @@ func (s *Server) handleUpdateVehicle() http.HandlerFunc {
             }
         }()
 
-        // Logika untuk upload gambar baru dan menambahkannya ke map 'updates'
         stnkFile, stnkHandler, errSTNK := r.FormFile("stnk_image")
         if errSTNK == nil {
             defer stnkFile.Close()
@@ -492,7 +485,6 @@ func (s *Server) handleUpdateVehicle() http.HandlerFunc {
             return
         }
 
-        // Hapus file lama HANYA JIKA file baru berhasil diupload dan diupdate
         if _, ok := updates["stnk_image_id"]; ok && oldStnkImageID.Valid {
              if errDel := s.deleteImageRecordAndFile(r.Context(), tx, oldStnkImageID.Int64); errDel != nil {
                 fmt.Printf("WARN: Failed to delete old STNK image (ID: %d) after update: %v\n", oldStnkImageID.Int64, errDel)
@@ -565,7 +557,6 @@ func (s *Server) handleDeleteVehicle() http.HandlerFunc {
             }
         }()
 
-        // Hapus gambar STNK jika ada
         if vehicleToDelete.STNKImageID.Valid {
             txErr = s.deleteImageRecordAndFile(r.Context(), tx, vehicleToDelete.STNKImageID.Int64)
             if txErr != nil {
@@ -573,11 +564,10 @@ func (s *Server) handleDeleteVehicle() http.HandlerFunc {
                 // Tidak menggagalkan commit utama, hanya warning. Atau bisa juga digagalkan.
                 // writeJSONError(w, "Failed to delete associated STNK image: "+txErr.Error(), http.StatusInternalServerError)
                 // return
-                txErr = nil // Reset error agar tidak rollback transaksi utama jika hanya image delete yg gagal
+                txErr = nil 
             }
         }
 
-        // Hapus gambar KK jika ada
         if vehicleToDelete.KKImageID.Valid {
             txErr = s.deleteImageRecordAndFile(r.Context(), tx, vehicleToDelete.KKImageID.Int64)
             if txErr != nil {
@@ -588,7 +578,6 @@ func (s *Server) handleDeleteVehicle() http.HandlerFunc {
             }
         }
 
-        // Hapus record vehicle
         txErr = database.DeleteVehicleTx(r.Context(), tx, id)
         if txErr != nil {
             if errors.Is(txErr, sql.ErrNoRows) || strings.Contains(txErr.Error(), "no vehicle record deleted") {
@@ -620,7 +609,6 @@ func (s *Server) deleteImageRecordAndFile(ctx context.Context, tx *sql.Tx, image
 
     err = database.DeleteImageTx(ctx, tx, imageID)
     if err != nil {
-        // Jika record DB gagal dihapus, jangan hapus file fisiknya.
         return fmt.Errorf("failed to delete image record for ID %d: %w", imageID, err)
     }
 
@@ -636,7 +624,7 @@ func (s *Server) deleteImageRecordAndFile(ctx context.Context, tx *sql.Tx, image
         // if !strings.HasPrefix(fullDiskPath, filepath.Clean(imageUploadPath)) {
         // 	return fmt.Errorf("invalid image path, potential traversal: %s", imagePath)
         // }
-        fullDiskPath := imagePath // Asumsi imagePath sudah aman dan benar
+        fullDiskPath := imagePath 
 
         if errOs := os.Remove(fullDiskPath); errOs != nil && !os.IsNotExist(errOs) {
             // Jika file fisik gagal dihapus setelah record DB berhasil dihapus, ini adalah masalah.

@@ -33,7 +33,6 @@ func ValidateMimeType(file multipart.File, handler *multipart.FileHeader, allowe
         return "", fmt.Errorf("file or handler cannot be nil for MIME validation")
     }
 
-    // validasi berdasarkan header Content-Type dari handler
     headerMimeType := handler.Header.Get("Content-Type")
     fmt.Printf("DEBUG ValidateMimeType: Header MIME for '%s': %s\n", handler.Filename, headerMimeType)
 
@@ -47,19 +46,16 @@ func ValidateMimeType(file multipart.File, handler *multipart.FileHeader, allowe
         }
     }
 
-    // 2. Jika header tidak cocok atau untuk keamanan tambahan, deteksi dari konten file
-    // Simpan posisi pointer saat ini
     currentPos, errSeek := file.Seek(0, io.SeekCurrent)
     if errSeek != nil {
         return "", fmt.Errorf("failed to get current file position for '%s' before MIME detection: %w", handler.Filename, errSeek)
     }
 
-    // Reset ke awal untuk membaca buffer deteksi
     if _, errSeek := file.Seek(0, io.SeekStart); errSeek != nil {
         return "", fmt.Errorf("failed to reset file pointer for '%s' for MIME detection: %w", handler.Filename, errSeek)
     }
 
-    buffer := make([]byte, 512) // Standar untuk http.DetectContentType
+    buffer := make([]byte, 512) 
     n, err := file.Read(buffer)
     if err != nil && err != io.EOF {
         // Kembalikan pointer ke posisi semula jika terjadi error baca
@@ -134,7 +130,6 @@ func (s *Server) handleImageUpload() http.HandlerFunc {
         }
         defer file.Close()
 
-        // Validasi tipe MIME menggunakan fungsi helper
         mimeType, errMime := ValidateMimeType(file, handler, DefaultAllowedMimeTypes)
         if errMime != nil {
             writeJSONError(w, fmt.Sprintf("MIME type validation failed: %v", errMime), http.StatusBadRequest)
@@ -168,25 +163,13 @@ func (s *Server) handleImageUpload() http.HandlerFunc {
             return
         }
 
-        // Tidak perlu membuka ulang file untuk deteksi MIME karena sudah dilakukan oleh ValidateMimeType
-
-        // Ambil UserID pengupload dari context jika diperlukan (jika Image.UploaderUserID diaktifkan)
-        // uploaderUserID, ok := r.Context().Value(middleware.UserIDContextKey).(string)
-        // if !ok && <uploaderUserID_is_mandatory> { // Sesuaikan kondisi jika wajib
-        // 	os.Remove(storagePath)
-        // 	http.Error(w, "Unauthorized: User ID not found for upload", http.StatusUnauthorized)
-        // 	return
-        // }
-
         dbImg := &database.Image{
-            StoragePath:      filepath.ToSlash(storagePath), // Simpan dengan forward slashes
+            StoragePath:      filepath.ToSlash(storagePath), 
             FilenameOriginal: originalFilename,
-            MimeType:         mimeType, // Gunakan mimeType yang divalidasi
+            MimeType:         mimeType, 
             SizeBytes:        fileSize,
-            // UploaderUserID:   &uploaderUserID, // Jika UploaderUserID diaktifkan dan valid
         }
 
-        // Mulai transaksi
         tx, err := s.db.Get().BeginTx(r.Context(), nil)
         if err != nil {
             log.Printf("Error starting transaction for image upload: %v", err)
@@ -194,19 +177,16 @@ func (s *Server) handleImageUpload() http.HandlerFunc {
             writeJSONError(w, "Internal server error: could not process image upload", http.StatusInternalServerError)
             return
         }
-        var txErr error // Variabel untuk error di dalam scope transaksi
+        var txErr error 
         defer func() {
             if p := recover(); p != nil {
                 tx.Rollback()
-                // Hapus file jika panic terjadi setelah file disimpan tapi sebelum commit
-                // (meskipun os.Remove sudah ada di beberapa jalur error, ini untuk catch-all)
                 if _, statErr := os.Stat(storagePath); statErr == nil {
                     os.Remove(storagePath)
                 }
                 panic(p)
             } else if txErr != nil {
                 tx.Rollback()
-                // Hapus file jika error terjadi setelah file disimpan tapi sebelum commit
                 if _, statErr := os.Stat(storagePath); statErr == nil {
                     os.Remove(storagePath)
                 }
@@ -216,7 +196,6 @@ func (s *Server) handleImageUpload() http.HandlerFunc {
         txErr = database.CreateImageTx(r.Context(), tx, dbImg)
         if txErr != nil {
             log.Printf("Error creating image record in DB for %s: %v", storagePath, txErr)
-            // txErr sudah di-set, defer akan melakukan rollback dan menghapus file
             writeJSONError(w, "Internal server error: could not save image metadata", http.StatusInternalServerError)
             return
         }
@@ -224,7 +203,6 @@ func (s *Server) handleImageUpload() http.HandlerFunc {
         txErr = tx.Commit()
         if txErr != nil {
             log.Printf("Error committing transaction for image upload: %v", txErr)
-            // txErr sudah di-set, defer akan melakukan rollback dan menghapus file
             writeJSONError(w, "Internal server error: could not finalize image upload", http.StatusInternalServerError)
             return
         }
@@ -263,7 +241,6 @@ func (s *Server) handleGetImage() http.HandlerFunc {
 
         cleanStoragePath := filepath.Clean(imgData.StoragePath)
 
-        // Periksa apakah file ada di disk
         if _, err := os.Stat(cleanStoragePath); os.IsNotExist(err) {
             log.Printf("Image file not found on disk: %s (DB ID: %d)", cleanStoragePath, imageID)
             writeJSONError(w, "Image file not found on disk", http.StatusNotFound)

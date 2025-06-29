@@ -34,14 +34,11 @@ func ValidateAPIKeyAndGetUser(ctx context.Context, db *sql.DB, apiKey string) (*
         return nil, errors.New("invalid API key")
     }
 
-    // Setelah mendapatkan UserID, ambil detail lengkap user tersebut menggunakan fungsi yang ada.
     user, err := FindUserByID(db, validUserID, ctx)
     if err != nil {
         return nil, err
     }
 
-    // Update last_used_at (opsional, tapi praktik yang baik).
-    // Dijalankan sebagai goroutine agar tidak memblokir response.
     go db.ExecContext(context.Background(), "UPDATE service_api_keys SET last_used_at = NOW() WHERE user_id = $1", validUserID)
 
     return user, nil

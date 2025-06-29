@@ -143,7 +143,6 @@ func (s *Server) handleUpdateSuspect() http.HandlerFunc {
 			return
 		}
 
-		// Catatan: CreatedAt tidak diubah saat update.
 		if err := database.UpdateSuspect(r.Context(), s.db.Get(), id, &suspect); err != nil {
 			log.Printf("ERROR: Failed to update suspect %d: %v", id, err)
 			writeJSONError(w, "Failed to update suspect", http.StatusInternalServerError)
